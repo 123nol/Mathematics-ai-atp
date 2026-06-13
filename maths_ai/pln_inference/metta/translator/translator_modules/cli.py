@@ -192,7 +192,7 @@ f"!(import! &self {axioms_path})",
                        
                 f"; === Test: {test_name} ===",
                 f"; === Goal index: {i} ===",
-                f"; === Target formula: {query_formula} ===",
+                
                 "",
                 script,
             ]
