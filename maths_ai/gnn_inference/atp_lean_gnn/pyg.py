@@ -72,21 +72,45 @@ _PREMISE_SELECTABLE_TYPES = {"var", "predicate", "type"}
 _PREMISE_SELECTABLE_META_LABELS = {"Hyp"}
 
 
+def _descendants(dag: DAGBuilder, root_id: int) -> set[int]:
+    seen: set[int] = set()
+    stack = list(dag.nodes[root_id].children)
+
+    while stack:
+        node_id = stack.pop()
+        if node_id in seen:
+            continue
+        seen.add(node_id)
+        stack.extend(dag.nodes[node_id].children)
+
+    return seen
+
+
 def build_premise_mask(dag: DAGBuilder) -> list[bool]:
     """Return a per-node boolean list where ``True`` marks a valid argument candidate.
 
     Valid candidates are:
-    - Leaf-like nodes with type ``var``, ``predicate``, or ``type``
+    - Leaf-like nodes with type ``var``, ``predicate``, or ``type`` that occur
+      inside a local hypothesis subtree
     - ``Hyp`` nodes (entire hypotheses)
 
     Excluded: ``App``, ``Arrow``, ``Forall``, ``Explicit``, ``State``,
-    ``Goal``, operators, and other structural syntax nodes.
+    ``Goal``, operators, other structural syntax nodes, and goal-only
+    expression nodes.  Shared nodes remain selectable when they also appear
+    under a hypothesis.
     """
+    hypothesis_nodes = {
+        node.id for node in dag.nodes if node.label in _PREMISE_SELECTABLE_META_LABELS
+    }
+    hypothesis_descendants: set[int] = set()
+    for node_id in hypothesis_nodes:
+        hypothesis_descendants.update(_descendants(dag, node_id))
+
     mask: list[bool] = []
     for node in dag.nodes:
         if node.label in _PREMISE_SELECTABLE_META_LABELS:
             mask.append(True)
-        elif node.node_type in _PREMISE_SELECTABLE_TYPES:
+        elif node.node_type in _PREMISE_SELECTABLE_TYPES and node.id in hypothesis_descendants:
             mask.append(True)
         else:
             mask.append(False)

@@ -95,6 +95,25 @@ class PremiseMaskTests(unittest.TestCase):
         self.assertTrue(hyp_included, "At least one 'Hyp' node should be included")
         self.assertTrue(var_included, "At least one 'var' node should be included")
 
+    def test_excludes_goal_only_leaf_nodes(self) -> None:
+        dag = proof_state_to_dag("⊢ P x")
+        mask = build_premise_mask(dag)
+
+        self.assertFalse(
+            any(mask),
+            "Goal-only expression nodes should not be selectable as tactic arguments",
+        )
+
+    def test_keeps_nodes_that_are_shared_with_hypotheses(self) -> None:
+        dag = proof_state_to_dag("h : P x\n⊢ P x")
+        mask = build_premise_mask(dag)
+        selected_labels = {node.label for node in dag.nodes if mask[node.id]}
+
+        self.assertIn("Hyp", selected_labels)
+        self.assertIn("h", selected_labels)
+        self.assertIn("P", selected_labels)
+        self.assertIn("x", selected_labels)
+
     def test_at_least_one_node_is_selectable(self) -> None:
         dag = proof_state_to_dag(DEMO_STATE)
         mask = build_premise_mask(dag)
@@ -211,6 +230,31 @@ class TacticWithArgsClassifierTests(unittest.TestCase):
         self.assertGreater(len(arg_logits_list), 0)
         for arg_logits in arg_logits_list:
             self.assertEqual(arg_logits.shape[0], 2)
+
+    def test_forward_respects_cached_premise_mask(self) -> None:
+        batch, vocab = self._build_tiny_batch()
+        batch.premise_mask = torch.zeros_like(batch.premise_mask, dtype=torch.bool)
+        batch.premise_mask[batch.ptr[:-1]] = True
+
+        model = TacticWithArgsClassifier(
+            num_node_labels=len(vocab),
+            num_tactics=5,
+            hidden_dim=16,
+            num_layers=2,
+            dropout=0.1,
+            max_args=2,
+        )
+
+        _, arg_logits_list = model(
+            batch,
+            teacher_tactic_ids=batch.y.view(-1),
+            tactic_names=["apply", "apply"],
+        )
+
+        self.assertGreater(len(arg_logits_list), 0)
+        first_step = arg_logits_list[0]
+        self.assertTrue(torch.isfinite(first_step[:, 0]).all())
+        self.assertTrue(torch.isneginf(first_step[:, 1:]).all())
 
     def test_zero_arity_returns_empty_arg_list(self) -> None:
         batch, vocab = self._build_tiny_batch()

@@ -49,6 +49,15 @@ def _sanitize_inaccessible_names(goal: Goal) -> Goal:
         expression=substitute(goal.expression),
         hypotheses=[substitute(h) for h in goal.hypotheses],
     )
+
+
+def _render_proof_state(goal: Goal) -> str:
+    """Render a goal with its local context in the parser's proof-state format."""
+    lines = [hypothesis.strip() for hypothesis in goal.hypotheses if hypothesis.strip()]
+    lines.append(f"⊢ {goal.expression.strip()}")
+    return "\n".join(lines)
+
+
 def plot_hypergraph(graph: ProofHypergraph) -> None:
     """Utility to visualize the proof hypergraph with Graphviz (for debugging
     and analysis).
@@ -197,10 +206,10 @@ class HybridReasoner:
         self.max_nodes = max_nodes
 
     # GNN side
-    def predict_next_tactic(self, sub_goal: str) -> List[TacticCandidate]:
+    def predict_next_tactic(self, proof_state: str) -> List[TacticCandidate]:
         """
             Args:
-                sub_goal: a string expression of the target sub_goal for which tactics are predicated for
+                proof_state: a proof-state string containing local hypotheses and the target goal
             Returns:
                 up to `top_k_tactics` TacticCandidate(tactic_name, arguments, probability),
                 ranked by predicted probability, descending.
@@ -210,7 +219,7 @@ class HybridReasoner:
                 edge case) — callers must treat that as a dead branch, which
                 `_expand` below does via `graph.mark_node_exhausted`.
         """
-        return self.gnn_engine.inference(sub_goal, top_k=self.top_k_tactics)
+        return self.gnn_engine.inference(proof_state, top_k=self.top_k_tactics)
 
     # PLN side
     def _make_dts_key(self, parent_goal: str, tactic: TacticCandidate, subgoal: Goal) -> str:
@@ -367,8 +376,9 @@ class HybridReasoner:
             return
 
         sanitized = _sanitize_inaccessible_names(node.goal)
-        print(f"  [GNN Input] goal={sanitized.expression}  hyps={sanitized.hypotheses}")
-        candidates = self.predict_next_tactic(sanitized.expression)
+        proof_state = _render_proof_state(sanitized)
+        print(f"  [GNN Input] proof_state={proof_state!r}")
+        candidates = self.predict_next_tactic(proof_state)
         if not candidates:
             graph.mark_node_exhausted(node.id, note="GNN returned no viable tactic")
             return
