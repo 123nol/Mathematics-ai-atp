@@ -28,6 +28,7 @@ from .cache import (
 )
 from .dataset import DATASET_NAME, canonicalize_split_name, iter_dataset_rows
 from .preparation import prepare_example
+from .argument_labels import LIBRARY_LEMMA, LOCAL_HYPOTHESIS, analyze_argument_labels
 from .labels import build_tactic_vocab, encode_tactic_name
 from .lemma_corpus import load_lemma_name_index
 from .pyg import build_vocab_from_labels, dag_to_pyg
@@ -104,32 +105,6 @@ def scan_train_split(
     return node_vocab, tactic_vocab, report
 
 
-def _resolve_arg_node_indices(dag, arg_tokens: list[str]) -> list[int]:
-    """Best-effort: match each argument token to a DAG node index by label.
-
-    Returns a list of node indices (one per argument token), using ``-1``
-    when no matching node is found in the graph.
-    """
-    # Build label → node_id map (first match wins)
-    label_to_id: dict[str, int] = {}
-    for node in dag.nodes:
-        if node.label not in label_to_id:
-            label_to_id[node.label] = node.id
-
-    return [label_to_id.get(token, -1) for token in arg_tokens]
-
-
-def _resolve_arg_lemma_ids(
-    arg_tokens: list[str],
-    lemma_name_index: dict[str, int] | None,
-) -> list[int]:
-    if not arg_tokens:
-        return []
-    if lemma_name_index is None:
-        return [-1 for _ in arg_tokens]
-    return [lemma_name_index.get(token, -1) for token in arg_tokens]
-
-
 def process_split(
     *,
     dataset_name: str,
@@ -142,7 +117,6 @@ def process_split(
 ) -> tuple[SplitReport, dict[str, object]]:
     import torch
 
-    from .labels import parse_tactic_arguments
     from .pyg import build_premise_mask
 
     report = SplitReport(split=split)
@@ -191,12 +165,20 @@ def process_split(
         premise_mask = build_premise_mask(example.dag)
         data.premise_mask = torch.tensor(premise_mask, dtype=torch.bool)
 
-        _, arg_tokens = parse_tactic_arguments(example.row.tactic)
-        arg_indices = _resolve_arg_node_indices(example.dag, arg_tokens)
-        arg_lemma_ids = _resolve_arg_lemma_ids(arg_tokens, lemma_name_index)
-        for idx, node_id in enumerate(arg_indices):
-            if node_id >= 0 and idx < len(arg_lemma_ids):
-                arg_lemma_ids[idx] = -1
+        argument_analysis = analyze_argument_labels(
+            raw_tactic=example.row.tactic,
+            dag=example.dag,
+            lemma_name_index=lemma_name_index,
+            premise_mask=premise_mask,
+        )
+        arg_indices = [
+            resolution.node_id if resolution.category == LOCAL_HYPOTHESIS else -1
+            for resolution in argument_analysis.resolutions
+        ]
+        arg_lemma_ids = [
+            resolution.lemma_id if resolution.category == LIBRARY_LEMMA else -1
+            for resolution in argument_analysis.resolutions
+        ]
         data.arg_node_indices = torch.tensor(arg_indices, dtype=torch.long) if arg_indices else torch.tensor([], dtype=torch.long)
         data.arg_lemma_ids = torch.tensor(arg_lemma_ids, dtype=torch.long) if arg_lemma_ids else torch.tensor([], dtype=torch.long)
         data.arg_count = len(arg_indices)

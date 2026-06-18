@@ -5,6 +5,8 @@ from .argument_selector import (
     compute_combined_loss,
     resolve_arg_targets_to_padded,
 )
+from .argument_audit import ArgumentAuditConfig, run_argument_label_audit
+from .argument_labels import ArgumentLabelAnalysis, ArgumentResolution, analyze_argument_labels, resolve_argument_tokens
 from .argument_training import (
     evaluate_model_with_args,
     train_one_epoch_with_args,
@@ -56,6 +58,9 @@ from .visualize import build_visualization_html, visualize_dag
 
 __all__ = [
     "ArgumentSelector",
+    "ArgumentAuditConfig",
+    "ArgumentLabelAnalysis",
+    "ArgumentResolution",
     "BaselineConfig",
     "CandidatePool",
     "DAGBuilder",
@@ -91,6 +96,7 @@ __all__ = [
     "TrainingLoopConfig",
     "UNKNOWN_TACTIC",
     "analyze_saved_run",
+    "analyze_argument_labels",
     "build_dataloaders",
     "build_failure_record",
     "build_json_payload",
@@ -129,6 +135,8 @@ __all__ = [
     "proof_state_to_dag",
     "render_run_comparison_markdown",
     "resolve_arg_targets_to_padded",
+    "resolve_argument_tokens",
+    "run_argument_label_audit",
     "run_parser_audit",
     "run_preprocessing",
     "train_baseline",
@@ -137,4 +145,3 @@ __all__ = [
     "visualize_dag",
     "write_dag_json",
 ]
-

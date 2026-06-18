@@ -116,10 +116,62 @@ def get_tactic_arity(tactic_name: str) -> int:
 # Best-effort tactic argument extraction
 # ---------------------------------------------------------------------------
 
-_BRACKET_OPEN = {"[", "⟨", "("}
-_BRACKET_CLOSE = {"]", "⟩", ")"}
-_ARG_SPLIT_RE = re.compile(r"[,\s]+")
 _ARG_TOKEN_RE = re.compile(r"[A-Za-z0-9_.']+")
+_TACTIC_KEYWORDS = {
+    "at",
+    "by",
+    "generalizing",
+    "in",
+    "only",
+    "using",
+    "with",
+}
+_ARGUMENT_TARGET_MARKERS = (" at ", " using ", " with ", " by ", " generalizing ")
+
+
+def _argument_remainder(raw: str, tactic_name: str) -> str:
+    match = TACTIC_TOKEN_RE.search(raw.strip())
+    if match is None or match.group(0) != tactic_name:
+        return ""
+    return raw.strip()[match.end():].strip()
+
+
+def _strip_target_clause(text: str) -> str:
+    padded = f" {text} "
+    positions = [
+        padded.find(marker)
+        for marker in _ARGUMENT_TARGET_MARKERS
+        if padded.find(marker) != -1
+    ]
+    if not positions:
+        return text.strip()
+    return padded[: min(positions)].strip()
+
+
+def _identifier_tokens(text: str) -> list[str]:
+    tokens: list[str] = []
+    for token_match in _ARG_TOKEN_RE.finditer(text):
+        token = token_match.group(0).strip("'")
+        if not token or token in _TACTIC_KEYWORDS:
+            continue
+        tokens.append(token)
+    return tokens
+
+
+def _bracketed_argument_tokens(text: str) -> list[str]:
+    args: list[str] = []
+    for open_ch, close_ch in zip("[⟨(", "]⟩)"):
+        start = text.find(open_ch)
+        if start == -1:
+            continue
+        end = text.rfind(close_ch)
+        if end > start:
+            content = text[start + 1 : end]
+        else:
+            content = text[start + 1 :]
+        args.extend(_identifier_tokens(content))
+        break
+    return args
 
 
 def parse_tactic_arguments(raw: str) -> tuple[str, list[str]]:
@@ -145,32 +197,19 @@ def parse_tactic_arguments(raw: str) -> tuple[str, list[str]]:
         return EMPTY_TACTIC, []
 
     tactic_name = tactic_match.group(0)
-    remainder = text[tactic_match.end():].strip()
+    remainder = _argument_remainder(text, tactic_name)
 
-    # Strip keywords that are not arguments (e.g. "only" in "simp only [...]")
-    for keyword in ("only", "with", "using", "at"):
-        if remainder.startswith(keyword):
-            remainder = remainder[len(keyword):].strip()
+    if not remainder:
+        return tactic_name, []
 
-    # Extract content inside brackets if present
-    args: list[str] = []
-    bracket_content: str | None = None
-    for open_ch, close_ch in zip("[⟨(", "]⟩)"):
-        start = remainder.find(open_ch)
-        if start != -1:
-            end = remainder.rfind(close_ch)
-            if end > start:
-                bracket_content = remainder[start + 1 : end]
-            else:
-                bracket_content = remainder[start + 1 :]
-            break
+    bracketed_args = _bracketed_argument_tokens(remainder)
+    if bracketed_args:
+        return tactic_name, bracketed_args
 
-    if bracket_content is not None:
-        for token_match in _ARG_TOKEN_RE.finditer(bracket_content):
-            args.append(token_match.group(0))
-    elif remainder:
-        # No brackets — split the remainder on whitespace and take identifier tokens
-        for token_match in _ARG_TOKEN_RE.finditer(remainder):
-            args.append(token_match.group(0))
+    if tactic_name in {"rw", "rewrite", "simp", "simp_all", "simp?"}:
+        return tactic_name, _identifier_tokens(_strip_target_clause(remainder))
 
-    return tactic_name, args
+    if tactic_name in {"cases", "rcases", "induction"}:
+        return tactic_name, _identifier_tokens(_strip_target_clause(remainder))[:1]
+
+    return tactic_name, _identifier_tokens(remainder)

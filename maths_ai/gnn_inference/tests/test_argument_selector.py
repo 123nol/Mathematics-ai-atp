@@ -18,6 +18,12 @@ from maths_ai.gnn_inference.atp_lean_gnn.argument_selector import (
     TacticWithArgsClassifier,
     compute_combined_loss,
 )
+from maths_ai.gnn_inference.atp_lean_gnn.argument_labels import (
+    GRAPH_NON_CANDIDATE,
+    LIBRARY_LEMMA,
+    LOCAL_HYPOTHESIS,
+    analyze_argument_labels,
+)
 from maths_ai.gnn_inference.atp_lean_gnn.pyg import dag_to_pyg
 
 
@@ -66,6 +72,16 @@ class ParseTacticArgumentsTests(unittest.TestCase):
         name, args = parse_tactic_arguments("exact Nat.zero_add n")
         self.assertEqual(name, "exact")
         self.assertIn("Nat.zero_add", args)
+
+    def test_rw_ignores_target_after_at_clause(self) -> None:
+        name, args = parse_tactic_arguments("rw [h] at h2")
+        self.assertEqual(name, "rw")
+        self.assertEqual(args, ["h"])
+
+    def test_cases_ignores_constructor_names(self) -> None:
+        name, args = parse_tactic_arguments("cases h with | intro left right => simp")
+        self.assertEqual(name, "cases")
+        self.assertEqual(args, ["h"])
 
 
 class PremiseMaskTests(unittest.TestCase):
@@ -118,6 +134,22 @@ class PremiseMaskTests(unittest.TestCase):
         dag = proof_state_to_dag(DEMO_STATE)
         mask = build_premise_mask(dag)
         self.assertTrue(any(mask), "Premise mask should have at least one True entry")
+
+    def test_argument_analysis_separates_local_lemma_and_goal_only_nodes(self) -> None:
+        dag = proof_state_to_dag("h : P x\n⊢ P y")
+        local = analyze_argument_labels(raw_tactic="exact h", dag=dag)
+        self.assertEqual(local.resolutions[0].category, LOCAL_HYPOTHESIS)
+
+        lemma = analyze_argument_labels(
+            raw_tactic="rw [Nat.zero_add]",
+            dag=dag,
+            lemma_name_index={"Nat.zero_add": 42},
+        )
+        self.assertEqual(lemma.resolutions[0].category, LIBRARY_LEMMA)
+        self.assertEqual(lemma.resolutions[0].lemma_id, 42)
+
+        goal_only = analyze_argument_labels(raw_tactic="exact y", dag=dag)
+        self.assertEqual(goal_only.resolutions[0].category, GRAPH_NON_CANDIDATE)
 
 
 class ArgumentSelectorTests(unittest.TestCase):
