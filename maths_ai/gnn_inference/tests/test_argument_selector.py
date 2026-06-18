@@ -71,7 +71,28 @@ class ParseTacticArgumentsTests(unittest.TestCase):
     def test_exact_with_complex_argument(self) -> None:
         name, args = parse_tactic_arguments("exact Nat.zero_add n")
         self.assertEqual(name, "exact")
-        self.assertIn("Nat.zero_add", args)
+        self.assertEqual(args, ["Nat.zero_add"])
+
+    def test_rewrite_arguments_strip_leandojo_anchor_markup(self) -> None:
+        name, args = parse_tactic_arguments("rw [<a>Nat.mul_comm</a>, <a>Nat.mul_add_mod</a>]")
+        self.assertEqual(name, "rw")
+        self.assertEqual(args, ["Nat.mul_comm", "Nat.mul_add_mod"])
+
+    def test_rewrite_keeps_one_head_per_bracket_item(self) -> None:
+        name, args = parse_tactic_arguments(
+            "rw [← hs, ← <a>Set.image_id</a> (s : <a>Set</a> M), <a>Finsupp.mem_span_image_iff_total</a>] at hn"
+        )
+        self.assertEqual(name, "rw")
+        self.assertEqual(args, ["hs", "Set.image_id", "Finsupp.mem_span_image_iff_total"])
+
+    def test_apply_keeps_only_proof_head(self) -> None:
+        name, args = parse_tactic_arguments("apply <a>IsFractionRing.injective</a> A (<a>FractionRing</a> A)")
+        self.assertEqual(name, "apply")
+        self.assertEqual(args, ["IsFractionRing.injective"])
+
+    def test_intro_and_ext_do_not_create_argument_targets(self) -> None:
+        self.assertEqual(parse_tactic_arguments("intro x")[1], [])
+        self.assertEqual(parse_tactic_arguments("ext x")[1], [])
 
     def test_rw_ignores_target_after_at_clause(self) -> None:
         name, args = parse_tactic_arguments("rw [h] at h2")

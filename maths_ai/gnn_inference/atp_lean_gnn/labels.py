@@ -117,6 +117,8 @@ def get_tactic_arity(tactic_name: str) -> int:
 # ---------------------------------------------------------------------------
 
 _ARG_TOKEN_RE = re.compile(r"[A-Za-z0-9_.']+")
+_HTML_TAG_RE = re.compile(r"</?[A-Za-z][^>]*>")
+_NAMED_ARGUMENT_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_']*\s*:=")
 _TACTIC_KEYWORDS = {
     "at",
     "by",
@@ -127,6 +129,63 @@ _TACTIC_KEYWORDS = {
     "with",
 }
 _ARGUMENT_TARGET_MARKERS = (" at ", " using ", " with ", " by ", " generalizing ")
+_REWRITE_LIKE_TACTICS = {
+    "rw",
+    "rewrite",
+    "erw",
+    "nth_rewrite",
+    "nth_rw",
+    "rw_mod_cast",
+    "rwa",
+    "simp",
+    "simp!",
+    "simp?",
+    "simp_all",
+    "simp_all!",
+    "simp_rw",
+    "simpa",
+    "simpa!",
+    "simpa?",
+}
+_UNARY_PROOF_TACTICS = {
+    "absurd",
+    "apply",
+    "apply_fun",
+    "apply_mod_cast",
+    "change",
+    "convert",
+    "convert_to",
+    "exact",
+    "exact_mod_cast",
+    "fapply",
+    "refine",
+    "refine'",
+    "show",
+}
+_BINDER_OR_STRUCTURAL_TACTICS = {
+    "all_goals",
+    "any_goals",
+    "case",
+    "case'",
+    "classical",
+    "constructor",
+    "ext",
+    "ext1",
+    "funext",
+    "intro",
+    "intros",
+    "introv",
+    "left",
+    "next",
+    "rfl",
+    "right",
+    "rintro",
+    "trivial",
+}
+
+
+def _strip_markup(raw: str) -> str:
+    return _HTML_TAG_RE.sub("", raw)
 
 
 def _argument_remainder(raw: str, tactic_name: str) -> str:
@@ -149,13 +208,44 @@ def _strip_target_clause(text: str) -> str:
 
 
 def _identifier_tokens(text: str) -> list[str]:
+    text = _NAMED_ARGUMENT_RE.sub(" ", text)
     tokens: list[str] = []
     for token_match in _ARG_TOKEN_RE.finditer(text):
-        token = token_match.group(0).strip("'")
+        token = token_match.group(0).strip("'.")
         if not token or token in _TACTIC_KEYWORDS:
+            continue
+        if token == "_" or token.startswith("_") or token.startswith("?"):
+            continue
+        if token.isdigit():
             continue
         tokens.append(token)
     return tokens
+
+
+def _split_top_level_commas(text: str) -> list[str]:
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    pairs = {"[": "]", "(": ")", "⟨": "⟩", "{": "}"}
+    closing = set(pairs.values())
+
+    for char in text:
+        if char in pairs:
+            depth += 1
+        elif char in closing and depth > 0:
+            depth -= 1
+        if char == "," and depth == 0:
+            part = "".join(current).strip()
+            if part:
+                parts.append(part)
+            current = []
+            continue
+        current.append(char)
+
+    tail = "".join(current).strip()
+    if tail:
+        parts.append(tail)
+    return parts
 
 
 def _bracketed_argument_tokens(text: str) -> list[str]:
@@ -169,9 +259,17 @@ def _bracketed_argument_tokens(text: str) -> list[str]:
             content = text[start + 1 : end]
         else:
             content = text[start + 1 :]
-        args.extend(_identifier_tokens(content))
+        for item in _split_top_level_commas(content):
+            item_tokens = _identifier_tokens(item)
+            if item_tokens:
+                args.append(item_tokens[0])
         break
     return args
+
+
+def _first_identifier_token(text: str) -> list[str]:
+    tokens = _identifier_tokens(text)
+    return tokens[:1]
 
 
 def parse_tactic_arguments(raw: str) -> tuple[str, list[str]]:
@@ -188,7 +286,7 @@ def parse_tactic_arguments(raw: str) -> tuple[str, list[str]]:
     >>> parse_tactic_arguments("simp")
     ('simp', [])
     """
-    text = raw.strip()
+    text = _strip_markup(raw).strip()
     if not text:
         return EMPTY_TACTIC, []
 
@@ -202,14 +300,23 @@ def parse_tactic_arguments(raw: str) -> tuple[str, list[str]]:
     if not remainder:
         return tactic_name, []
 
-    bracketed_args = _bracketed_argument_tokens(remainder)
-    if bracketed_args:
-        return tactic_name, bracketed_args
+    if tactic_name in _BINDER_OR_STRUCTURAL_TACTICS:
+        return tactic_name, []
 
-    if tactic_name in {"rw", "rewrite", "simp", "simp_all", "simp?"}:
+    if tactic_name in _REWRITE_LIKE_TACTICS:
+        bracketed_args = _bracketed_argument_tokens(remainder)
+        if bracketed_args:
+            return tactic_name, bracketed_args
         return tactic_name, _identifier_tokens(_strip_target_clause(remainder))
 
     if tactic_name in {"cases", "rcases", "induction"}:
-        return tactic_name, _identifier_tokens(_strip_target_clause(remainder))[:1]
+        return tactic_name, _first_identifier_token(_strip_target_clause(remainder))
+
+    if tactic_name in _UNARY_PROOF_TACTICS:
+        return tactic_name, _first_identifier_token(remainder)
+
+    bracketed_args = _bracketed_argument_tokens(remainder)
+    if bracketed_args:
+        return tactic_name, bracketed_args
 
     return tactic_name, _identifier_tokens(remainder)
