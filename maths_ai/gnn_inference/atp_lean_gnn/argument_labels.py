@@ -37,6 +37,23 @@ _RAW_EXPRESSION_MARKERS = (
     "∀",
 )
 _BRACKETED_RE = re.compile(r"[\[⟨(].*[\]⟩)]")
+_HTML_TAG_RE = re.compile(r"</?[A-Za-z][^>]*>")
+_RAW_TOKEN_RE = re.compile(r"[A-Za-z0-9_.'?]+")
+_RAW_TOKEN_SKIP = {
+    "at",
+    "by",
+    "in",
+    "only",
+    "using",
+    "with",
+}
+_RAW_EXPRESSION_HEAD_TACTICS = {
+    "apply",
+    "change",
+    "exact",
+    "refine",
+    "show",
+}
 
 
 @dataclass(frozen=True)
@@ -142,13 +159,25 @@ def looks_like_raw_expression_argument(raw_tactic: str, tactic_name: str, arg_to
     if any(marker in padded for marker in _RAW_EXPRESSION_MARKERS):
         return True
 
-    return expected_arity == 1 and len(arg_tokens) > 1 and tactic_name in {
-        "apply",
-        "exact",
-        "refine",
-        "change",
-        "show",
-    }
+    if expected_arity == 1 and tactic_name in _RAW_EXPRESSION_HEAD_TACTICS:
+        return len(_raw_remainder_tokens(remainder)) > 1
+
+    return False
+
+
+def _raw_remainder_tokens(remainder: str) -> list[str]:
+    remainder = _HTML_TAG_RE.sub("", remainder)
+    tokens: list[str] = []
+    for match in _RAW_TOKEN_RE.finditer(remainder):
+        token = match.group(0).strip("'.")
+        if not token or token in _RAW_TOKEN_SKIP:
+            continue
+        if token == "_" or token.startswith("_") or token.startswith("?"):
+            continue
+        if token.isdigit():
+            continue
+        tokens.append(token)
+    return tokens
 
 
 def analyze_argument_labels(
