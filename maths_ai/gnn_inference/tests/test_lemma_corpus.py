@@ -51,3 +51,18 @@ class LemmaCorpusTests(unittest.TestCase):
         index = load_lemma_name_index(self.corpus_path)
         self.assertEqual(index["Foo.bar"], 0)
         self.assertEqual(index["Baz.qux"], 1)
+        self.assertEqual(index["bar"], 0)
+        self.assertEqual(index["qux"], 1)
+
+    def test_name_index_keeps_ambiguous_suffixes_unresolved(self) -> None:
+        records = [
+            LemmaRecord(lemma_id=0, name="Foo.same", statement="x = x", namespace="Foo", module=""),
+            LemmaRecord(lemma_id=1, name="Baz.same", statement="y = y", namespace="Baz", module=""),
+        ]
+        write_lemma_corpus(self.corpus_path, records)
+
+        index = load_lemma_name_index(self.corpus_path)
+
+        self.assertEqual(index["Foo.same"], 0)
+        self.assertEqual(index["Baz.same"], 1)
+        self.assertNotIn("same", index)

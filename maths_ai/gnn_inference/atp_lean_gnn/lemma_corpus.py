@@ -77,12 +77,23 @@ def load_lemma_corpus(path: str | Path) -> list[LemmaRecord]:
 def load_lemma_name_index(path: str | Path) -> dict[str, int]:
     """Return a mapping from lemma name to lemma id.
 
-    The first occurrence of a lemma name wins if duplicates exist.
+    The first occurrence of a lemma name wins if duplicates exist.  Unique
+    suffix aliases are also indexed so tactic labels that omit a namespace can
+    still resolve when there is no ambiguity.
     """
     name_index: dict[str, int] = {}
+    suffix_candidates: dict[str, set[int]] = {}
     for record in load_lemma_corpus(path):
         if record.name not in name_index:
             name_index[record.name] = record.lemma_id
+        parts = [part for part in record.name.split(".") if part]
+        for start in range(1, len(parts)):
+            suffix = ".".join(parts[start:])
+            suffix_candidates.setdefault(suffix, set()).add(record.lemma_id)
+
+    for suffix, lemma_ids in suffix_candidates.items():
+        if suffix not in name_index and len(lemma_ids) == 1:
+            name_index[suffix] = next(iter(lemma_ids))
     return name_index
 
 

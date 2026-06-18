@@ -159,6 +159,39 @@ def write_summary_markdown(output_root: str | Path, summary: dict[str, object]) 
             f"{split_summary['graph_stats']['edge_count']['median']:.2f} |"
         )
 
+    argument_summary = summary["overall"]["argument_label_summary"]
+    lines.extend(
+        [
+            "",
+            "## Clean Argument Labels",
+            "",
+            f"- examples with parsed arguments: `{argument_summary['examples_with_arguments']}`",
+            f"- examples with clean trainable arguments: `{argument_summary['examples_with_clean_arguments']}`",
+            f"- raw-expression examples skipped for argument loss: `{argument_summary['raw_expression_example_count']}`",
+            f"- total parsed arguments: `{argument_summary['total_parsed_argument_count']}`",
+            f"- trainable argument targets: `{argument_summary['trainable_argument_count']}`",
+            f"- trainable local targets: `{argument_summary['trainable_local_argument_count']}`",
+            f"- trainable lemma targets: `{argument_summary['trainable_lemma_argument_count']}`",
+            f"- skipped argument tokens: `{argument_summary['skipped_argument_count']}`",
+            f"- trainable argument coverage: `{argument_summary['trainable_argument_coverage']:.3f}`",
+            "",
+            "| Split | Parsed Args | Trainable | Local | Lemma | Skipped | Coverage |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for split in summary["splits"]:
+        arg_split_summary = summary["splits_summary"][split]["argument_label_summary"]
+        lines.append(
+            "| "
+            f"{split} | "
+            f"{arg_split_summary['total_parsed_argument_count']} | "
+            f"{arg_split_summary['trainable_argument_count']} | "
+            f"{arg_split_summary['trainable_local_argument_count']} | "
+            f"{arg_split_summary['trainable_lemma_argument_count']} | "
+            f"{arg_split_summary['skipped_argument_count']} | "
+            f"{arg_split_summary['trainable_argument_coverage']:.3f} |"
+        )
+
     lines.extend(
         [
             "",
@@ -278,6 +311,15 @@ class SplitReport:
     failure_categories: Counter[str] = field(default_factory=Counter)
     failure_phases: Counter[str] = field(default_factory=Counter)
     representative_failures: dict[str, list[dict[str, object]]] = field(default_factory=dict)
+    examples_with_arguments: int = 0
+    examples_with_clean_arguments: int = 0
+    raw_expression_example_count: int = 0
+    total_parsed_argument_count: int = 0
+    trainable_argument_count: int = 0
+    trainable_local_argument_count: int = 0
+    trainable_lemma_argument_count: int = 0
+    skipped_argument_count: int = 0
+    argument_category_counts: Counter[str] = field(default_factory=Counter)
 
     def record_success(self, *, dag: DAGBuilder, tactic_name: str) -> None:
         self.attempted_count += 1
@@ -286,6 +328,30 @@ class SplitReport:
         self.edge_counts.append(dag.num_edges)
         self.reused_node_counts.append(len(dag.reused_nodes()))
         self.tactic_counts[tactic_name] += 1
+
+    def record_argument_labels(
+        self,
+        *,
+        total_arguments: int,
+        trainable_local: int,
+        trainable_lemma: int,
+        skipped_arguments: int,
+        has_raw_expression: bool,
+        category_counts: Counter[str],
+    ) -> None:
+        if total_arguments > 0:
+            self.examples_with_arguments += 1
+        if trainable_local + trainable_lemma > 0:
+            self.examples_with_clean_arguments += 1
+        if has_raw_expression:
+            self.raw_expression_example_count += 1
+
+        self.total_parsed_argument_count += total_arguments
+        self.trainable_local_argument_count += trainable_local
+        self.trainable_lemma_argument_count += trainable_lemma
+        self.trainable_argument_count += trainable_local + trainable_lemma
+        self.skipped_argument_count += skipped_arguments
+        self.argument_category_counts.update(category_counts)
 
     def record_failure(
         self,
@@ -351,6 +417,22 @@ class SplitReport:
             "top_tactics": _counter_summary(self.tactic_counts),
             "top_failure_categories": _counter_summary(self.failure_categories),
             "top_failure_phases": _counter_summary(self.failure_phases),
+            "argument_label_summary": {
+                "examples_with_arguments": self.examples_with_arguments,
+                "examples_with_clean_arguments": self.examples_with_clean_arguments,
+                "raw_expression_example_count": self.raw_expression_example_count,
+                "total_parsed_argument_count": self.total_parsed_argument_count,
+                "trainable_argument_count": self.trainable_argument_count,
+                "trainable_local_argument_count": self.trainable_local_argument_count,
+                "trainable_lemma_argument_count": self.trainable_lemma_argument_count,
+                "skipped_argument_count": self.skipped_argument_count,
+                "trainable_argument_coverage": (
+                    0.0
+                    if self.total_parsed_argument_count == 0
+                    else self.trainable_argument_count / self.total_parsed_argument_count
+                ),
+                "category_counts": dict(self.argument_category_counts),
+            },
         }
 
     def to_audit_manifest(
@@ -404,9 +486,27 @@ def build_summary(
     overall_failure = sum(report.failure_count for report in split_reports.values())
     overall_failure_categories: Counter[str] = Counter()
     overall_tactic_counts: Counter[str] = Counter()
+    overall_argument_categories: Counter[str] = Counter()
+    overall_examples_with_arguments = 0
+    overall_examples_with_clean_arguments = 0
+    overall_raw_expression_examples = 0
+    overall_total_arguments = 0
+    overall_trainable_arguments = 0
+    overall_trainable_local_arguments = 0
+    overall_trainable_lemma_arguments = 0
+    overall_skipped_arguments = 0
     for report in split_reports.values():
         overall_failure_categories.update(report.failure_categories)
         overall_tactic_counts.update(report.tactic_counts)
+        overall_argument_categories.update(report.argument_category_counts)
+        overall_examples_with_arguments += report.examples_with_arguments
+        overall_examples_with_clean_arguments += report.examples_with_clean_arguments
+        overall_raw_expression_examples += report.raw_expression_example_count
+        overall_total_arguments += report.total_parsed_argument_count
+        overall_trainable_arguments += report.trainable_argument_count
+        overall_trainable_local_arguments += report.trainable_local_argument_count
+        overall_trainable_lemma_arguments += report.trainable_lemma_argument_count
+        overall_skipped_arguments += report.skipped_argument_count
 
     return {
         "dataset": dataset_name,
@@ -419,6 +519,22 @@ def build_summary(
             "attempted_count": overall_attempted,
             "success_count": overall_success,
             "failure_count": overall_failure,
+            "argument_label_summary": {
+                "examples_with_arguments": overall_examples_with_arguments,
+                "examples_with_clean_arguments": overall_examples_with_clean_arguments,
+                "raw_expression_example_count": overall_raw_expression_examples,
+                "total_parsed_argument_count": overall_total_arguments,
+                "trainable_argument_count": overall_trainable_arguments,
+                "trainable_local_argument_count": overall_trainable_local_arguments,
+                "trainable_lemma_argument_count": overall_trainable_lemma_arguments,
+                "skipped_argument_count": overall_skipped_arguments,
+                "trainable_argument_coverage": (
+                    0.0
+                    if overall_total_arguments == 0
+                    else overall_trainable_arguments / overall_total_arguments
+                ),
+                "category_counts": dict(overall_argument_categories),
+            },
         },
         "splits_summary": manifests,
         "top_tactic_names": _counter_summary(overall_tactic_counts),

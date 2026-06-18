@@ -10,6 +10,10 @@ import torch
 
 from maths_ai.gnn_inference.atp_lean_gnn import (
     EMPTY_TACTIC,
+    LIBRARY_LEMMA,
+    LOCAL_HYPOTHESIS,
+    RAW_EXPRESSION,
+    UNRESOLVED,
     UNKNOWN_TACTIC,
     PreprocessConfig,
     build_failure_record,
@@ -20,6 +24,7 @@ from maths_ai.gnn_inference.atp_lean_gnn import (
 from maths_ai.gnn_inference.atp_lean_gnn.cache import build_json_payload
 from maths_ai.gnn_inference.atp_lean_gnn.dataset import DatasetRow, canonicalize_split_name, dataset_split_name
 from maths_ai.gnn_inference.atp_lean_gnn.graph import proof_state_to_dag
+from maths_ai.gnn_inference.atp_lean_gnn.lemma_corpus import LemmaRecord, write_lemma_corpus
 from maths_ai.gnn_inference.atp_lean_gnn.preprocess import main as preprocess_main
 from maths_ai.gnn_inference.atp_lean_gnn.state import parse_state
 
@@ -193,6 +198,101 @@ class DatasetPreparationTests(unittest.TestCase):
         self.assertEqual(train_manifest["attempted_count"], 3)
         self.assertEqual(train_manifest["success_count"], 2)
         self.assertEqual(summary_json["splits_summary"]["train"]["success_count"], 2)
+
+    @patch("maths_ai.gnn_inference.atp_lean_gnn.preprocess.iter_dataset_rows")
+    def test_preprocessing_keeps_only_clean_argument_targets(self, mock_iter_dataset_rows) -> None:
+        rows = [
+            DatasetRow(
+                state="h : P x\n|- P x",
+                theorem="demo.local",
+                tactic="exact h",
+                split="train",
+                row_index=0,
+                dataset_name="fake/dataset",
+            ),
+            DatasetRow(
+                state="h : P x\n|- P x",
+                theorem="demo.lemma",
+                tactic="rw [bar]",
+                split="train",
+                row_index=1,
+                dataset_name="fake/dataset",
+            ),
+            DatasetRow(
+                state="|- P x",
+                theorem="demo.raw",
+                tactic="exact P x",
+                split="train",
+                row_index=2,
+                dataset_name="fake/dataset",
+            ),
+            DatasetRow(
+                state="|- P x",
+                theorem="demo.missing",
+                tactic="rw [missing_lemma]",
+                split="train",
+                row_index=3,
+                dataset_name="fake/dataset",
+            ),
+        ]
+
+        def fake_iter_dataset_rows(*, dataset_name: str, split: str, sample_limit: int | None = None):
+            selected = rows if sample_limit is None else rows[:sample_limit]
+            return iter(selected)
+
+        mock_iter_dataset_rows.side_effect = fake_iter_dataset_rows
+        lemma_path = self.output_root / "lemmas.jsonl"
+        write_lemma_corpus(
+            lemma_path,
+            [
+                LemmaRecord(
+                    lemma_id=42,
+                    name="Foo.bar",
+                    statement="x = x",
+                    namespace="Foo",
+                    module="",
+                )
+            ],
+        )
+
+        summary = run_preprocessing(
+            PreprocessConfig(
+                dataset_name="fake/dataset",
+                splits=("train",),
+                output_root=self.output_root,
+                lemma_corpus_path=lemma_path,
+                force=True,
+            )
+        )
+
+        local_data = torch.load(self.output_root / "train" / "pyg" / "000000000.pt", weights_only=False)
+        lemma_data = torch.load(self.output_root / "train" / "pyg" / "000000001.pt", weights_only=False)
+        raw_data = torch.load(self.output_root / "train" / "pyg" / "000000002.pt", weights_only=False)
+        missing_data = torch.load(self.output_root / "train" / "pyg" / "000000003.pt", weights_only=False)
+
+        self.assertEqual(local_data.arg_count, 1)
+        self.assertGreaterEqual(int(local_data.arg_node_indices[0].item()), 0)
+        self.assertEqual(int(local_data.arg_lemma_ids[0].item()), -1)
+
+        self.assertEqual(lemma_data.arg_count, 1)
+        self.assertEqual(int(lemma_data.arg_node_indices[0].item()), -1)
+        self.assertEqual(int(lemma_data.arg_lemma_ids[0].item()), 42)
+
+        self.assertEqual(raw_data.arg_count, 0)
+        self.assertTrue(raw_data.arg_raw_expression)
+        self.assertEqual(missing_data.arg_count, 0)
+        self.assertFalse(missing_data.arg_raw_expression)
+
+        argument_summary = summary["overall"]["argument_label_summary"]
+        self.assertEqual(argument_summary["total_parsed_argument_count"], 4)
+        self.assertEqual(argument_summary["trainable_argument_count"], 2)
+        self.assertEqual(argument_summary["trainable_local_argument_count"], 1)
+        self.assertEqual(argument_summary["trainable_lemma_argument_count"], 1)
+        self.assertEqual(argument_summary["skipped_argument_count"], 2)
+        self.assertEqual(argument_summary["category_counts"][LOCAL_HYPOTHESIS], 1)
+        self.assertEqual(argument_summary["category_counts"][LIBRARY_LEMMA], 1)
+        self.assertEqual(argument_summary["category_counts"][RAW_EXPRESSION], 1)
+        self.assertEqual(argument_summary["category_counts"][UNRESOLVED], 1)
 
     @patch("maths_ai.gnn_inference.atp_lean_gnn.preprocess.iter_dataset_rows")
     def test_cli_refuses_to_overwrite_without_force(self, mock_iter_dataset_rows) -> None:

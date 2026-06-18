@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,7 +29,13 @@ from .cache import (
 )
 from .dataset import DATASET_NAME, canonicalize_split_name, iter_dataset_rows
 from .preparation import prepare_example
-from .argument_labels import LIBRARY_LEMMA, LOCAL_HYPOTHESIS, analyze_argument_labels
+from .argument_labels import (
+    LIBRARY_LEMMA,
+    LOCAL_HYPOTHESIS,
+    RAW_EXPRESSION,
+    ArgumentLabelAnalysis,
+    analyze_argument_labels,
+)
 from .labels import build_tactic_vocab, encode_tactic_name
 from .lemma_corpus import load_lemma_name_index
 from .pyg import build_vocab_from_labels, dag_to_pyg
@@ -46,6 +53,47 @@ class PreprocessConfig:
     sample_per_split: int | None = None
     lemma_corpus_path: Path | None = None
     force: bool = False
+
+
+def _clean_argument_targets(
+    analysis: ArgumentLabelAnalysis,
+) -> tuple[list[int], list[int], dict[str, object]]:
+    category_counts = Counter(resolution.category for resolution in analysis.resolutions)
+    if analysis.has_raw_expression_argument:
+        category_counts[RAW_EXPRESSION] += 1
+
+    if analysis.has_raw_expression_argument:
+        skipped_arguments = len(analysis.resolutions)
+        return [], [], {
+            "total_arguments": len(analysis.resolutions),
+            "trainable_local": 0,
+            "trainable_lemma": 0,
+            "skipped_arguments": skipped_arguments,
+            "has_raw_expression": True,
+            "category_counts": category_counts,
+        }
+
+    arg_indices: list[int] = []
+    arg_lemma_ids: list[int] = []
+    for resolution in analysis.resolutions:
+        if resolution.category == LOCAL_HYPOTHESIS:
+            arg_indices.append(resolution.node_id)
+            arg_lemma_ids.append(-1)
+        elif resolution.category == LIBRARY_LEMMA:
+            arg_indices.append(-1)
+            arg_lemma_ids.append(resolution.lemma_id)
+
+    trainable_local = sum(1 for node_id in arg_indices if node_id >= 0)
+    trainable_lemma = sum(1 for lemma_id in arg_lemma_ids if lemma_id >= 0)
+    skipped_arguments = len(analysis.resolutions) - trainable_local - trainable_lemma
+    return arg_indices, arg_lemma_ids, {
+        "total_arguments": len(analysis.resolutions),
+        "trainable_local": trainable_local,
+        "trainable_lemma": trainable_lemma,
+        "skipped_arguments": skipped_arguments,
+        "has_raw_expression": False,
+        "category_counts": category_counts,
+    }
 
 
 def _normalize_splits(raw_splits: str | list[str] | tuple[str, ...]) -> list[str]:
@@ -171,17 +219,14 @@ def process_split(
             lemma_name_index=lemma_name_index,
             premise_mask=premise_mask,
         )
-        arg_indices = [
-            resolution.node_id if resolution.category == LOCAL_HYPOTHESIS else -1
-            for resolution in argument_analysis.resolutions
-        ]
-        arg_lemma_ids = [
-            resolution.lemma_id if resolution.category == LIBRARY_LEMMA else -1
-            for resolution in argument_analysis.resolutions
-        ]
+        arg_indices, arg_lemma_ids, argument_label_stats = _clean_argument_targets(argument_analysis)
         data.arg_node_indices = torch.tensor(arg_indices, dtype=torch.long) if arg_indices else torch.tensor([], dtype=torch.long)
         data.arg_lemma_ids = torch.tensor(arg_lemma_ids, dtype=torch.long) if arg_lemma_ids else torch.tensor([], dtype=torch.long)
         data.arg_count = len(arg_indices)
+        data.arg_raw_expression = bool(argument_label_stats["has_raw_expression"])
+        data.arg_total_parsed_count = int(argument_label_stats["total_arguments"])
+        data.arg_trainable_count = len(arg_indices)
+        data.arg_skipped_count = int(argument_label_stats["skipped_arguments"])
         # --------------------------------------------------------------
 
         write_pyg_artifact(
@@ -192,6 +237,14 @@ def process_split(
         )
 
         report.record_success(dag=example.dag, tactic_name=example.tactic_name)
+        report.record_argument_labels(
+            total_arguments=int(argument_label_stats["total_arguments"]),
+            trainable_local=int(argument_label_stats["trainable_local"]),
+            trainable_lemma=int(argument_label_stats["trainable_lemma"]),
+            skipped_arguments=int(argument_label_stats["skipped_arguments"]),
+            has_raw_expression=bool(argument_label_stats["has_raw_expression"]),
+            category_counts=argument_label_stats["category_counts"],
+        )
 
     if report.success_count == 0:
         raise RuntimeError(f"Split '{split}' produced zero successful examples.")

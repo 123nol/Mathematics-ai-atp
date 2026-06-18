@@ -6,7 +6,17 @@ from .argument_selector import (
     resolve_arg_targets_to_padded,
 )
 from .argument_audit import ArgumentAuditConfig, run_argument_label_audit
-from .argument_labels import ArgumentLabelAnalysis, ArgumentResolution, analyze_argument_labels, resolve_argument_tokens
+from .argument_labels import (
+    GRAPH_NON_CANDIDATE,
+    LIBRARY_LEMMA,
+    LOCAL_HYPOTHESIS,
+    RAW_EXPRESSION,
+    UNRESOLVED,
+    ArgumentLabelAnalysis,
+    ArgumentResolution,
+    analyze_argument_labels,
+    resolve_argument_tokens,
+)
 from .argument_training import (
     evaluate_model_with_args,
     train_one_epoch_with_args,
@@ -74,9 +84,12 @@ __all__ = [
     "GraphNode",
     "GraphSAGEClassifierConfig",
     "GraphSAGEStateClassifier",
+    "GRAPH_NON_CANDIDATE",
     "GraphStats",
     "Hypothesis",
     "InferencePipeline",
+    "LIBRARY_LEMMA",
+    "LOCAL_HYPOTHESIS",
     "LemmaIndex",
     "LemmaIndexConfig",
     "LemmaRecord",
@@ -89,12 +102,14 @@ __all__ = [
     "PremiseScorerConfig",
     "PreprocessConfig",
     "ProofState",
+    "RAW_EXPRESSION",
     "SplitReport",
     "TACTIC_ARITY",
     "TacticWithArgsClassifier",
     "TacticWithArgsConfig",
     "TrainingLoopConfig",
     "UNKNOWN_TACTIC",
+    "UNRESOLVED",
     "analyze_saved_run",
     "analyze_argument_labels",
     "build_dataloaders",
