@@ -270,6 +270,16 @@ def evaluate_model_with_premises(
     premise_top1_correct = 0
     premise_top5_correct = 0
     premise_mrr_sum = 0.0
+    local_target_count = 0
+    local_valid = 0
+    local_top1_correct = 0
+    local_top5_correct = 0
+    local_mrr_sum = 0.0
+    lemma_target_count = 0
+    lemma_valid = 0
+    lemma_top1_correct = 0
+    lemma_top5_correct = 0
+    lemma_mrr_sum = 0.0
 
     total_count = 0
     total_batches = len(loader)
@@ -341,6 +351,16 @@ def evaluate_model_with_premises(
         premise_top1_correct += p_metrics["top1_correct"]
         premise_top5_correct += p_metrics["top5_correct"]
         premise_mrr_sum += p_metrics["mrr_sum"]
+        local_target_count += p_metrics["local_target_count"]
+        local_valid += p_metrics["local_valid_samples"]
+        local_top1_correct += p_metrics["local_top1_correct"]
+        local_top5_correct += p_metrics["local_top5_correct"]
+        local_mrr_sum += p_metrics["local_mrr_sum"]
+        lemma_target_count += p_metrics["lemma_target_count"]
+        lemma_valid += p_metrics["lemma_valid_samples"]
+        lemma_top1_correct += p_metrics["lemma_top1_correct"]
+        lemma_top5_correct += p_metrics["lemma_top5_correct"]
+        lemma_mrr_sum += p_metrics["lemma_mrr_sum"]
 
         # Tactic top-1 accuracy (excluding UNK)
         known_mask = targets != unknown_tactic_id
@@ -377,8 +397,20 @@ def evaluate_model_with_premises(
         "premise_mrr": premise_mrr_sum / max(premise_valid, 1),
         "premise_top1_accuracy": premise_top1_correct / max(premise_valid, 1),
         "premise_top5_accuracy": premise_top5_correct / max(premise_valid, 1),
+        "premise_local_recall": local_valid / max(local_target_count, 1),
+        "premise_local_mrr": local_mrr_sum / max(local_valid, 1),
+        "premise_local_top1_accuracy": local_top1_correct / max(local_valid, 1),
+        "premise_local_top5_accuracy": local_top5_correct / max(local_valid, 1),
+        "premise_lemma_recall": lemma_valid / max(lemma_target_count, 1),
+        "premise_lemma_mrr": lemma_mrr_sum / max(lemma_valid, 1),
+        "premise_lemma_top1_accuracy": lemma_top1_correct / max(lemma_valid, 1),
+        "premise_lemma_top5_accuracy": lemma_top5_correct / max(lemma_valid, 1),
         "known_label_count": known_count,
         "premise_target_present_count": premise_target_present,
         "premise_valid_count": premise_valid,
+        "premise_local_target_count": local_target_count,
+        "premise_local_valid_count": local_valid,
+        "premise_lemma_target_count": lemma_target_count,
+        "premise_lemma_valid_count": lemma_valid,
         "evaluated_count": total_count,
     }

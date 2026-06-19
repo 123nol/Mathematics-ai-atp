@@ -176,27 +176,46 @@ def _find_target_index_in_pool(
        return the pool position of that lemma.
     3. Return -1 if no match is found.
     """
-    # Try local matches first
-    for node_id in arg_node_indices:
-        if node_id < 0:
-            continue
-        for pool_idx, (source, cid) in enumerate(
-            zip(pool.candidate_sources, pool.candidate_ids)
-        ):
-            if source == "local" and cid == node_id:
-                return pool_idx
+    target_idx, _source = _find_primary_target_in_pool(
+        pool,
+        arg_node_indices=arg_node_indices,
+        arg_lemma_ids=arg_lemma_ids,
+    )
+    return target_idx
 
-    # Try library matches
-    for lemma_id in arg_lemma_ids:
-        if lemma_id < 0:
-            continue
-        for pool_idx, (source, cid) in enumerate(
-            zip(pool.candidate_sources, pool.candidate_ids)
-        ):
-            if source == "lemma" and cid == lemma_id:
-                return pool_idx
 
-    return -1
+def _find_primary_target_in_pool(
+    pool: CandidatePool,
+    *,
+    arg_node_indices: list[int],
+    arg_lemma_ids: list[int],
+) -> tuple[int, str]:
+    """Find the primary target and report whether it is local or library.
+
+    If an example has both local and lemma targets, local is treated as the
+    primary target to match the pointer model's historical target priority.
+    """
+    local_targets = [node_id for node_id in arg_node_indices if node_id >= 0]
+    if local_targets:
+        for node_id in local_targets:
+            for pool_idx, (source, cid) in enumerate(
+                zip(pool.candidate_sources, pool.candidate_ids)
+            ):
+                if source == "local" and cid == node_id:
+                    return pool_idx, "local"
+        return -1, "local"
+
+    lemma_targets = [lemma_id for lemma_id in arg_lemma_ids if lemma_id >= 0]
+    if lemma_targets:
+        for lemma_id in lemma_targets:
+            for pool_idx, (source, cid) in enumerate(
+                zip(pool.candidate_sources, pool.candidate_ids)
+            ):
+                if source == "lemma" and cid == lemma_id:
+                    return pool_idx, "lemma"
+        return -1, "lemma"
+
+    return -1, "none"
 
 
 def compute_premise_ranking_loss(
@@ -240,6 +259,10 @@ def compute_premise_ranking_loss(
     top1_correct = 0
     top5_correct = 0
     mrr_sum = 0.0
+    source_metrics = {
+        "local": {"target": 0, "valid": 0, "top1": 0, "top5": 0, "mrr_sum": 0.0},
+        "lemma": {"target": 0, "valid": 0, "top1": 0, "top5": 0, "mrr_sum": 0.0},
+    }
 
     for b in range(batch_size):
         scores = score_list[b]  # [C_b]
@@ -253,13 +276,14 @@ def compute_premise_ranking_loss(
         if not has_target:
             continue
 
-        target_present_count += 1
-
-        target_idx = _find_target_index_in_pool(
+        target_idx, target_source = _find_primary_target_in_pool(
             pool,
             arg_node_indices=b_node_ids,
             arg_lemma_ids=b_lemma_ids,
         )
+        target_present_count += 1
+        if target_source in source_metrics:
+            source_metrics[target_source]["target"] += 1
 
         if target_idx < 0:
             # Target exists but wasn't retrieved in the pool — skip loss
@@ -280,6 +304,13 @@ def compute_premise_ranking_loss(
         if rank <= 5:
             top5_correct += 1
         mrr_sum += 1.0 / rank
+        if target_source in source_metrics:
+            source_metrics[target_source]["valid"] += 1
+            if rank == 1:
+                source_metrics[target_source]["top1"] += 1
+            if rank <= 5:
+                source_metrics[target_source]["top5"] += 1
+            source_metrics[target_source]["mrr_sum"] += 1.0 / rank
 
     if losses:
         total_loss = torch.stack(losses).mean()
@@ -294,6 +325,16 @@ def compute_premise_ranking_loss(
         "top1_correct": top1_correct,
         "top5_correct": top5_correct,
         "mrr_sum": mrr_sum,
+        "local_target_count": source_metrics["local"]["target"],
+        "local_valid_samples": source_metrics["local"]["valid"],
+        "local_top1_correct": source_metrics["local"]["top1"],
+        "local_top5_correct": source_metrics["local"]["top5"],
+        "local_mrr_sum": source_metrics["local"]["mrr_sum"],
+        "lemma_target_count": source_metrics["lemma"]["target"],
+        "lemma_valid_samples": source_metrics["lemma"]["valid"],
+        "lemma_top1_correct": source_metrics["lemma"]["top1"],
+        "lemma_top5_correct": source_metrics["lemma"]["top5"],
+        "lemma_mrr_sum": source_metrics["lemma"]["mrr_sum"],
     }
 
     return total_loss, metrics

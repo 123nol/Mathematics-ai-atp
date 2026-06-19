@@ -183,7 +183,9 @@ def main(argv: list[str] | None = None) -> int:
             f"Epoch {epoch} | Val MRR: {val_metrics['premise_mrr']:.4f} | "
             f"Hit@1: {val_metrics['premise_top1_accuracy']:.4f} | "
             f"Hit@5: {val_metrics['premise_top5_accuracy']:.4f} | "
-            f"Recall: {val_metrics['premise_recall']:.4f}"
+            f"Recall: {val_metrics['premise_recall']:.4f} | "
+            f"LocalRecall: {val_metrics['premise_local_recall']:.4f} | "
+            f"LemmaRecall: {val_metrics['premise_lemma_recall']:.4f}"
         )
 
         if val_metrics["premise_mrr"] > best_val_mrr:
@@ -211,9 +213,21 @@ def main(argv: list[str] | None = None) -> int:
                 "val_premise_top1_accuracy": float(val_metrics["premise_top1_accuracy"]),
                 "val_premise_top5_accuracy": float(val_metrics["premise_top5_accuracy"]),
                 "val_premise_recall": float(val_metrics["premise_recall"]),
+                "val_premise_local_recall": float(val_metrics["premise_local_recall"]),
+                "val_premise_local_mrr": float(val_metrics["premise_local_mrr"]),
+                "val_premise_local_top1_accuracy": float(val_metrics["premise_local_top1_accuracy"]),
+                "val_premise_local_top5_accuracy": float(val_metrics["premise_local_top5_accuracy"]),
+                "val_premise_lemma_recall": float(val_metrics["premise_lemma_recall"]),
+                "val_premise_lemma_mrr": float(val_metrics["premise_lemma_mrr"]),
+                "val_premise_lemma_top1_accuracy": float(val_metrics["premise_lemma_top1_accuracy"]),
+                "val_premise_lemma_top5_accuracy": float(val_metrics["premise_lemma_top5_accuracy"]),
                 "val_known_label_count": int(val_metrics["known_label_count"]),
                 "val_premise_target_present_count": int(val_metrics["premise_target_present_count"]),
                 "val_premise_valid_count": int(val_metrics["premise_valid_count"]),
+                "val_premise_local_target_count": int(val_metrics["premise_local_target_count"]),
+                "val_premise_local_valid_count": int(val_metrics["premise_local_valid_count"]),
+                "val_premise_lemma_target_count": int(val_metrics["premise_lemma_target_count"]),
+                "val_premise_lemma_valid_count": int(val_metrics["premise_lemma_valid_count"]),
                 "val_evaluated_count": int(val_metrics["evaluated_count"]),
                 "best_val_mrr": float(best_val_mrr),
             },

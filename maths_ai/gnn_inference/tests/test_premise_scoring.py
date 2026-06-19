@@ -13,6 +13,7 @@ from maths_ai.gnn_inference.atp_lean_gnn.premise_scoring import (
     PremiseScorerConfig,
     compute_premise_ranking_loss,
     _find_target_index_in_pool,
+    _find_primary_target_in_pool,
 )
 
 
@@ -156,6 +157,26 @@ class TestFindTargetIndex(unittest.TestCase):
         )
         self.assertEqual(idx, 0)  # local match at position 0
 
+    def test_primary_target_reports_source(self) -> None:
+        pool = _make_pool(num_local=2, num_lemma=2, hidden_dim=4)
+
+        local_idx, local_source = _find_primary_target_in_pool(
+            pool, arg_node_indices=[1], arg_lemma_ids=[100]
+        )
+        lemma_idx, lemma_source = _find_primary_target_in_pool(
+            pool, arg_node_indices=[-1], arg_lemma_ids=[101]
+        )
+        missing_idx, missing_source = _find_primary_target_in_pool(
+            pool, arg_node_indices=[-1], arg_lemma_ids=[999]
+        )
+
+        self.assertEqual(local_idx, 1)
+        self.assertEqual(local_source, "local")
+        self.assertEqual(lemma_idx, 3)
+        self.assertEqual(lemma_source, "lemma")
+        self.assertEqual(missing_idx, -1)
+        self.assertEqual(missing_source, "lemma")
+
 
 class TestPremiseRankingLoss(unittest.TestCase):
     def test_basic_loss_and_metrics(self) -> None:
@@ -179,6 +200,10 @@ class TestPremiseRankingLoss(unittest.TestCase):
         self.assertEqual(metrics["top1_correct"], 1)
         self.assertEqual(metrics["top5_correct"], 1)
         self.assertAlmostEqual(metrics["mrr_sum"], 1.0)
+        self.assertEqual(metrics["local_target_count"], 1)
+        self.assertEqual(metrics["local_valid_samples"], 1)
+        self.assertEqual(metrics["lemma_target_count"], 0)
+        self.assertEqual(metrics["lemma_valid_samples"], 0)
         self.assertGreater(loss.item(), 0.0)  # CE is always positive
 
     def test_lower_rank_metrics(self) -> None:
@@ -232,8 +257,39 @@ class TestPremiseRankingLoss(unittest.TestCase):
 
         self.assertEqual(metrics["target_present_count"], 1)
         self.assertEqual(metrics["valid_samples"], 0)
+        self.assertEqual(metrics["lemma_target_count"], 1)
+        self.assertEqual(metrics["lemma_valid_samples"], 0)
         self.assertEqual(metrics["mrr_sum"], 0.0)
         self.assertAlmostEqual(loss.item(), 0.0)
+
+    def test_source_metrics_split_local_and_lemma_retrieval(self) -> None:
+        hidden_dim = 8
+        pools = [
+            _make_pool(num_local=2, num_lemma=3, hidden_dim=hidden_dim),
+            _make_pool(num_local=2, num_lemma=3, hidden_dim=hidden_dim),
+            _make_pool(num_local=2, num_lemma=3, hidden_dim=hidden_dim),
+        ]
+        scores = [
+            torch.tensor([3.0, 1.0, 0.0, 2.0, -1.0]),
+            torch.tensor([0.0, 1.0, 2.0, 4.0, 3.0]),
+            torch.tensor([0.0, 1.0, 2.0, 4.0, 3.0]),
+        ]
+
+        arg_node_indices = torch.tensor([[0, -1], [-1, -1], [-1, -1]])
+        arg_lemma_ids = torch.tensor([[-1, -1], [101, -1], [999, -1]])
+
+        _loss, metrics = compute_premise_ranking_loss(
+            scores, pools, arg_node_indices, arg_lemma_ids
+        )
+
+        self.assertEqual(metrics["target_present_count"], 3)
+        self.assertEqual(metrics["valid_samples"], 2)
+        self.assertEqual(metrics["local_target_count"], 1)
+        self.assertEqual(metrics["local_valid_samples"], 1)
+        self.assertEqual(metrics["lemma_target_count"], 2)
+        self.assertEqual(metrics["lemma_valid_samples"], 1)
+        self.assertEqual(metrics["local_top1_correct"], 1)
+        self.assertEqual(metrics["lemma_top1_correct"], 1)
 
     def test_batch_loss(self) -> None:
         hidden_dim = 8
