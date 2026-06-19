@@ -5,6 +5,7 @@ import json
 import random
 import sys
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -60,21 +61,25 @@ class LemmaGraphCache:
         node_vocab: dict[str, int],
         edge_mode: str,
         lemma_text_mode: str,
+        max_cache_entries: int,
     ) -> None:
         self.records_by_id = {record.lemma_id: record for record in records}
         self.lemma_ids = list(self.records_by_id)
         self.node_vocab = node_vocab
         self.edge_mode = edge_mode
         self.lemma_text_mode = lemma_text_mode
-        self._cache: dict[int, Data | None] = {}
+        self.max_cache_entries = max_cache_entries
+        self._cache: OrderedDict[int, Data | None] = OrderedDict()
 
     def get(self, lemma_id: int) -> Data | None:
         if lemma_id in self._cache:
-            return self._cache[lemma_id]
+            value = self._cache.pop(lemma_id)
+            self._cache[lemma_id] = value
+            return value
 
         record = self.records_by_id.get(lemma_id)
         if record is None:
-            self._cache[lemma_id] = None
+            self._remember(lemma_id, None)
             return None
 
         try:
@@ -87,8 +92,15 @@ class LemmaGraphCache:
             data.edge_index = transform_edge_index(data.edge_index, edge_mode=self.edge_mode)
         except Exception:
             data = None
-        self._cache[lemma_id] = data
+        self._remember(lemma_id, data)
         return data
+
+    def _remember(self, lemma_id: int, data: Data | None) -> None:
+        if self.max_cache_entries <= 0:
+            return
+        self._cache[lemma_id] = data
+        while len(self._cache) > self.max_cache_entries:
+            self._cache.popitem(last=False)
 
     def sample_negatives(self, *, count: int, excluded: set[int]) -> list[int]:
         if count <= 0:
@@ -158,8 +170,9 @@ def _mine_hard_negatives(
     lemma_index: LemmaIndex | None,
     targets_by_sample: list[list[int]],
     hard_negatives: int,
+    max_hard_negatives_per_batch: int,
 ) -> list[int]:
-    if lemma_index is None or hard_negatives <= 0:
+    if lemma_index is None or hard_negatives <= 0 or max_hard_negatives_per_batch <= 0:
         return []
 
     with torch.no_grad():
@@ -182,8 +195,10 @@ def _mine_hard_negatives(
             hard_ids.append(lemma_id)
             seen.add(lemma_id)
             added_for_sample += 1
-            if added_for_sample >= hard_negatives:
+            if added_for_sample >= hard_negatives or len(hard_ids) >= max_hard_negatives_per_batch:
                 break
+        if len(hard_ids) >= max_hard_negatives_per_batch:
+            break
     return hard_ids
 
 
@@ -194,6 +209,7 @@ def _build_retriever_batch(
     max_args: int,
     random_negatives: int,
     hard_negative_ids: list[int],
+    max_lemma_candidates: int,
     device: torch.device,
 ) -> RetrieverBatch | None:
     targets_by_sample = _extract_lemma_targets(batch, max_args)
@@ -214,14 +230,20 @@ def _build_retriever_batch(
         return None
 
     positive_set = set(positive_lemma_ids)
+    negative_budget = max(max_lemma_candidates - len(lemma_data_list), 0)
+    added_negatives = 0
     for negative_id in hard_negative_ids:
+        if added_negatives >= negative_budget:
+            break
         if negative_id in positive_set:
             continue
         lemma_data = graph_cache.get(negative_id)
         if lemma_data is not None:
             lemma_data_list.append(lemma_data)
+            added_negatives += 1
 
-    for negative_id in graph_cache.sample_negatives(count=random_negatives, excluded=positive_set):
+    remaining_random = min(random_negatives, max(negative_budget - added_negatives, 0))
+    for negative_id in graph_cache.sample_negatives(count=remaining_random, excluded=positive_set):
         lemma_data = graph_cache.get(negative_id)
         if lemma_data is not None:
             lemma_data_list.append(lemma_data)
@@ -286,6 +308,8 @@ def _run_epoch(
     random_negatives: int,
     hard_negative_index: LemmaIndex | None,
     hard_negatives: int,
+    max_hard_negatives_per_batch: int,
+    max_lemma_candidates: int,
     temperature: float,
     grad_clip: float,
     train: bool,
@@ -315,6 +339,7 @@ def _run_epoch(
             lemma_index=hard_negative_index if train else None,
             targets_by_sample=targets_by_sample,
             hard_negatives=hard_negatives if train else 0,
+            max_hard_negatives_per_batch=max_hard_negatives_per_batch if train else 0,
         )
         retriever_batch = _build_retriever_batch(
             batch=batch,
@@ -322,6 +347,7 @@ def _run_epoch(
             max_args=max_args,
             random_negatives=random_negatives if train else 0,
             hard_negative_ids=hard_negative_ids,
+            max_lemma_candidates=max_lemma_candidates,
             device=device,
         )
         if retriever_batch is None:
@@ -390,6 +416,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--random-negatives", type=int, default=256, help="Random lemma negatives per batch")
     parser.add_argument("--hard-negative-index", type=str, default=None, help="Optional FAISS index used to mine hard negative lemmas")
     parser.add_argument("--hard-negatives", type=int, default=0, help="Hard negatives mined per lemma-target sample")
+    parser.add_argument("--max-hard-negatives-per-batch", type=int, default=128, help="Maximum mined hard negatives added to one GPU batch")
+    parser.add_argument("--max-lemma-candidates-per-batch", type=int, default=512, help="Maximum lemma graphs encoded in one contrastive batch")
+    parser.add_argument("--lemma-cache-size", type=int, default=4096, help="Maximum cached CPU lemma graphs; 0 disables caching")
     parser.add_argument(
         "--lemma-text-mode",
         type=str,
@@ -431,6 +460,7 @@ def main(argv: list[str] | None = None) -> int:
         node_vocab=metadata.node_vocab,
         edge_mode=config.edge_mode,
         lemma_text_mode=str(args.lemma_text_mode),
+        max_cache_entries=int(args.lemma_cache_size),
     )
     hard_negative_index = (
         None
@@ -459,6 +489,9 @@ def main(argv: list[str] | None = None) -> int:
         "random_negatives": int(args.random_negatives),
         "hard_negative_index": None if args.hard_negative_index is None else str(args.hard_negative_index),
         "hard_negatives": int(args.hard_negatives),
+        "max_hard_negatives_per_batch": int(args.max_hard_negatives_per_batch),
+        "max_lemma_candidates_per_batch": int(args.max_lemma_candidates_per_batch),
+        "lemma_cache_size": int(args.lemma_cache_size),
         "lemma_text_mode": str(args.lemma_text_mode),
     }
     (run_dir / "config.json").write_text(json.dumps(config.to_dict(), indent=2), encoding="utf-8")
@@ -479,6 +512,8 @@ def main(argv: list[str] | None = None) -> int:
             random_negatives=int(args.random_negatives),
             hard_negative_index=hard_negative_index,
             hard_negatives=int(args.hard_negatives),
+            max_hard_negatives_per_batch=int(args.max_hard_negatives_per_batch),
+            max_lemma_candidates=int(args.max_lemma_candidates_per_batch),
             temperature=float(args.temperature),
             grad_clip=float(args.grad_clip),
             train=True,
@@ -498,6 +533,8 @@ def main(argv: list[str] | None = None) -> int:
             random_negatives=0,
             hard_negative_index=None,
             hard_negatives=0,
+            max_hard_negatives_per_batch=0,
+            max_lemma_candidates=int(args.max_lemma_candidates_per_batch),
             temperature=float(args.temperature),
             grad_clip=float(args.grad_clip),
             train=False,
