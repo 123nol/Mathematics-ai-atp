@@ -25,6 +25,12 @@ from maths_ai.gnn_inference.atp_lean_gnn.graph import lemma_statement_to_dag
 from maths_ai.gnn_inference.atp_lean_gnn.lemma_index import LemmaIndex
 from maths_ai.gnn_inference.atp_lean_gnn.lemma_corpus import LemmaRecord, load_lemma_corpus
 from maths_ai.gnn_inference.atp_lean_gnn.logger import TrainingLogger
+from maths_ai.gnn_inference.atp_lean_gnn.memory_guard import (
+    MemoryGuard,
+    MemoryLimitExceeded,
+    add_memory_guard_args,
+    memory_guard_from_args,
+)
 from maths_ai.gnn_inference.atp_lean_gnn.pyg import dag_to_pyg
 from maths_ai.gnn_inference.atp_lean_gnn.reporting import console_print
 from maths_ai.gnn_inference.atp_lean_gnn.training import (
@@ -317,6 +323,7 @@ def _run_epoch(
     total_epochs: int,
     log_every_batches: int,
     use_amp: bool,
+    memory_guard: MemoryGuard | None = None,
 ) -> dict[str, float | int]:
     model.train(mode=train)
     total_loss = 0.0
@@ -331,6 +338,8 @@ def _run_epoch(
     console_print(f"  Starting {phase} epoch {epoch:02d}/{total_epochs:02d}...")
 
     for batch_index, batch in enumerate(loader, start=1):
+        if memory_guard is not None:
+            memory_guard.check_batch(f"lemma retriever {phase} epoch {epoch} batch {batch_index} before", batch_index)
         batch = batch.to(device)
         targets_by_sample = _extract_lemma_targets(batch, max_args)
         hard_negative_ids = _mine_hard_negatives(
@@ -341,6 +350,11 @@ def _run_epoch(
             hard_negatives=hard_negatives if train else 0,
             max_hard_negatives_per_batch=max_hard_negatives_per_batch if train else 0,
         )
+        if memory_guard is not None:
+            memory_guard.check_batch(
+                f"lemma retriever {phase} epoch {epoch} batch {batch_index} after hard negatives",
+                batch_index,
+            )
         retriever_batch = _build_retriever_batch(
             batch=batch,
             graph_cache=graph_cache,
@@ -353,6 +367,11 @@ def _run_epoch(
         if retriever_batch is None:
             skipped_batches += 1
             continue
+        if memory_guard is not None:
+            memory_guard.check_batch(
+                f"lemma retriever {phase} epoch {epoch} batch {batch_index} after candidate batch",
+                batch_index,
+            )
 
         if train:
             optimizer.zero_grad(set_to_none=True)
@@ -372,6 +391,9 @@ def _run_epoch(
             torch.nn.utils.clip_grad_norm_(model.backbone.parameters(), grad_clip)
             grad_scaler.step(optimizer)
             grad_scaler.update()
+
+        if memory_guard is not None:
+            memory_guard.check_batch(f"lemma retriever {phase} epoch {epoch} batch {batch_index} after", batch_index)
 
         positives = int(metrics["positive_count"])
         total_loss += float(metrics["loss"]) * positives
@@ -429,6 +451,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping norm")
     parser.add_argument("--device", type=str, default="auto", help="auto, cpu, or cuda")
     parser.add_argument("--log-every-batches", type=int, default=100, help="Batch logging interval")
+    add_memory_guard_args(parser)
     return parser
 
 
@@ -447,9 +470,15 @@ def main(argv: list[str] | None = None) -> int:
     metadata = load_prepared_metadata(config.prepared_root)
     device = resolve_device(str(args.device))
     use_amp = device.type == "cuda"
+    memory_guard = memory_guard_from_args(args, device=device)
 
     run_dir = _create_run_dir(Path(args.run_root))
     console_print(f"Saving retriever run to {run_dir}")
+    console_print(f"Memory guard: {memory_guard.describe()}")
+    (run_dir / "memory_guard.json").write_text(
+        json.dumps(memory_guard.config.to_dict(), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
 
     model = build_pointer_model(metadata, config).to(device)
     _load_checkpoint_state_dict(model, Path(args.checkpoint), device)
@@ -493,6 +522,7 @@ def main(argv: list[str] | None = None) -> int:
         "max_lemma_candidates_per_batch": int(args.max_lemma_candidates_per_batch),
         "lemma_cache_size": int(args.lemma_cache_size),
         "lemma_text_mode": str(args.lemma_text_mode),
+        "memory_guard": memory_guard.config.to_dict(),
     }
     (run_dir / "config.json").write_text(json.dumps(config.to_dict(), indent=2), encoding="utf-8")
     (run_dir / "retriever_config.json").write_text(
@@ -521,6 +551,7 @@ def main(argv: list[str] | None = None) -> int:
             total_epochs=int(args.epochs),
             log_every_batches=int(args.log_every_batches),
             use_amp=use_amp,
+            memory_guard=memory_guard,
         )
         val_metrics = _run_epoch(
             model=model,
@@ -542,6 +573,7 @@ def main(argv: list[str] | None = None) -> int:
             total_epochs=int(args.epochs),
             log_every_batches=int(args.log_every_batches),
             use_amp=use_amp,
+            memory_guard=memory_guard,
         )
 
         console_print(
@@ -591,4 +623,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except (FileNotFoundError, MemoryLimitExceeded, RuntimeError, ValueError) as exc:
+        console_print(f"ERROR: {exc}")
+        raise SystemExit(1)

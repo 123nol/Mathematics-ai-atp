@@ -17,6 +17,7 @@ from torch_geometric.loader import DataLoader
 
 from .argument_selector import TacticWithArgsClassifier, compute_combined_loss
 from .labels import get_tactic_arity
+from .memory_guard import MemoryGuard
 from .reporting import console_print
 
 
@@ -90,6 +91,7 @@ def train_one_epoch_with_args(
     log_every_batches: int,
     use_amp: bool,
     pin_memory: bool,
+    memory_guard: MemoryGuard | None = None,
 ) -> dict[str, float | int]:
     """Train one epoch with combined tactic + argument loss."""
     model.train()
@@ -106,6 +108,8 @@ def train_one_epoch_with_args(
     )
 
     for batch_index, batch in enumerate(loader, start=1):
+        if memory_guard is not None:
+            memory_guard.check_batch(f"argument train epoch {epoch} batch {batch_index} before", batch_index)
         batch = batch.to(device, non_blocking=(device.type == "cuda" and pin_memory))
         targets = batch.y.view(-1)
         tactic_names = _extract_tactic_names(batch)
@@ -147,6 +151,9 @@ def train_one_epoch_with_args(
                 # Check for NaNs in gradients/weights if needed, but here we just skip the step
             optimizer.zero_grad(set_to_none=True)
 
+        if memory_guard is not None:
+            memory_guard.check_batch(f"argument train epoch {epoch} batch {batch_index} after", batch_index)
+
         batch_size = int(targets.numel())
         total_tactic_loss += metrics["tactic_loss"] * batch_size
         total_arg_loss += metrics["arg_loss"] * batch_size
@@ -184,6 +191,7 @@ def evaluate_model_with_args(
     log_every_batches: int | None = None,
     use_amp: bool = False,
     pin_memory: bool = False,
+    memory_guard: MemoryGuard | None = None,
 ) -> dict[str, float | int]:
     """Evaluate model with combined metrics."""
     model.eval()
@@ -200,6 +208,8 @@ def evaluate_model_with_args(
         console_print(f"  Evaluating {split_name} split ({total_batches} batches, arg-aware)...")
 
     for batch_index, batch in enumerate(loader, start=1):
+        if memory_guard is not None:
+            memory_guard.check_batch(f"argument eval {split_name or 'split'} batch {batch_index} before", batch_index)
         batch = batch.to(device, non_blocking=(device.type == "cuda" and pin_memory))
         targets = batch.y.view(-1)
         tactic_names = _extract_tactic_names(batch)
@@ -235,6 +245,9 @@ def evaluate_model_with_args(
             top1_correct += int((preds == targets[known_mask]).sum().item())
         known_count += kc
         total_count += bs
+
+        if memory_guard is not None:
+            memory_guard.check_batch(f"argument eval {split_name or 'split'} batch {batch_index} after", batch_index)
 
         if (
             split_name is not None

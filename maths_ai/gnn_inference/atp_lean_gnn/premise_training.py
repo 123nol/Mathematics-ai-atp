@@ -17,6 +17,7 @@ from torch_geometric.loader import DataLoader
 from .argument_selector import TacticWithArgsClassifier, compute_combined_loss
 from .labels import get_tactic_arity
 from .lemma_index import LemmaIndex
+from .memory_guard import MemoryGuard
 from .premise_pool import build_unified_pools
 from .premise_scoring import PremiseScorer, compute_premise_ranking_loss
 from .reporting import console_print
@@ -109,6 +110,7 @@ def train_one_epoch_with_premises(
     log_every_batches: int,
     use_amp: bool,
     pin_memory: bool,
+    memory_guard: MemoryGuard | None = None,
 ) -> dict[str, float | int]:
     """Train one epoch with combined tactic + argument + premise ranking loss."""
     model.train()
@@ -129,6 +131,8 @@ def train_one_epoch_with_premises(
     )
 
     for batch_index, batch in enumerate(loader, start=1):
+        if memory_guard is not None:
+            memory_guard.check_batch(f"premise train epoch {epoch} batch {batch_index} before", batch_index)
         batch = batch.to(
             device, non_blocking=(device.type == "cuda" and pin_memory)
         )
@@ -206,6 +210,9 @@ def train_one_epoch_with_premises(
         grad_scaler.step(optimizer)
         grad_scaler.update()
 
+        if memory_guard is not None:
+            memory_guard.check_batch(f"premise train epoch {epoch} batch {batch_index} after", batch_index)
+
         batch_size = int(targets.numel())
         total_tactic_loss += ta_metrics["tactic_loss"] * batch_size
         total_arg_loss += ta_metrics["arg_loss"] * batch_size
@@ -253,6 +260,7 @@ def evaluate_model_with_premises(
     log_every_batches: int | None = None,
     use_amp: bool = False,
     pin_memory: bool = False,
+    memory_guard: MemoryGuard | None = None,
 ) -> dict[str, float | int]:
     """Evaluate model with combined tactic + argument + premise metrics."""
     model.eval()
@@ -292,6 +300,8 @@ def evaluate_model_with_premises(
         )
 
     for batch_index, batch in enumerate(loader, start=1):
+        if memory_guard is not None:
+            memory_guard.check_batch(f"premise eval {split_name or 'split'} batch {batch_index} before", batch_index)
         batch = batch.to(
             device, non_blocking=(device.type == "cuda" and pin_memory)
         )
@@ -370,6 +380,9 @@ def evaluate_model_with_premises(
             top1_correct += int((preds == targets[known_mask]).sum().item())
         known_count += kc
         total_count += bs
+
+        if memory_guard is not None:
+            memory_guard.check_batch(f"premise eval {split_name or 'split'} batch {batch_index} after", batch_index)
 
         if (
             split_name is not None

@@ -22,6 +22,7 @@ from .argument_training import (
 from .argument_selector import TacticWithArgsClassifier, TacticWithArgsConfig
 from .dataset import CANONICAL_SPLITS, canonicalize_split_name
 from .labels import UNKNOWN_TACTIC, get_tactic_arity
+from .memory_guard import MemoryGuard, MemoryLimitExceeded, add_memory_guard_args, memory_guard_from_args
 from .model import GraphSAGEClassifierConfig, GraphSAGEStateClassifier
 from .pyg import NODE_TYPE_TO_ID
 from .reporting import console_print
@@ -673,6 +674,7 @@ def train_one_epoch(
     log_every_batches: int,
     use_amp: bool,
     pin_memory: bool,
+    memory_guard: MemoryGuard | None = None,
 ) -> dict[str, float | int]:
     model.train()
     total_loss = 0.0
@@ -686,6 +688,8 @@ def train_one_epoch(
     )
 
     for batch_index, batch in enumerate(loader, start=1):
+        if memory_guard is not None:
+            memory_guard.check_batch(f"baseline train epoch {epoch} batch {batch_index} before", batch_index)
         batch = batch.to(device, non_blocking=(device.type == "cuda" and pin_memory))
         targets = batch.y.view(-1)
         if bool((targets == unknown_tactic_id).any()):
@@ -701,6 +705,9 @@ def train_one_epoch(
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         grad_scaler.step(optimizer)
         grad_scaler.update()
+
+        if memory_guard is not None:
+            memory_guard.check_batch(f"baseline train epoch {epoch} batch {batch_index} after", batch_index)
 
         batch_size = int(targets.numel())
         total_loss += float(loss.item()) * batch_size
@@ -731,6 +738,7 @@ def evaluate_model(
     log_every_batches: int | None = None,
     use_amp: bool = False,
     pin_memory: bool = False,
+    memory_guard: MemoryGuard | None = None,
 ) -> dict[str, float | int]:
     model.eval()
     loss_sum = 0.0
@@ -746,6 +754,8 @@ def evaluate_model(
 
     with torch.no_grad():
         for batch_index, batch in enumerate(loader, start=1):
+            if memory_guard is not None:
+                memory_guard.check_batch(f"baseline eval {split_name or 'split'} batch {batch_index} before", batch_index)
             batch = batch.to(device, non_blocking=(device.type == "cuda" and pin_memory))
             with torch.amp.autocast(device_type=device.type, enabled=use_amp):
                 logits = model(batch)
@@ -773,6 +783,8 @@ def evaluate_model(
                     f"excluded={unknown_label_excluded_count} | "
                     f"elapsed={elapsed}"
                 )
+            if memory_guard is not None:
+                memory_guard.check_batch(f"baseline eval {split_name or 'split'} batch {batch_index} after", batch_index)
 
     top1 = top1_correct / known_label_count if known_label_count else 0.0
     top5 = top5_correct / known_label_count if known_label_count else 0.0
@@ -836,6 +848,7 @@ def train_baseline(
     config: BaselineConfig,
     *,
     resume_run_dir: str | Path | None = None,
+    memory_guard: MemoryGuard | None = None,
 ) -> dict[str, object]:
     metadata = load_prepared_metadata(config.prepared_root)
     set_seed(config.seed)
@@ -893,6 +906,9 @@ def train_baseline(
     console_print(f"  Prepared cache           : {config.prepared_root}")
     console_print(f"  Device                   : {device}")
     console_print(f"  AMP enabled              : {use_amp}")
+    if memory_guard is not None:
+        console_print(f"  Memory guard             : {memory_guard.describe()}")
+        _write_json(run_dir / "memory_guard.json", memory_guard.config.to_dict())
     console_print(
         f"  Split sizes              : train={len(datasets['train'])}, "
         f"val={len(datasets['val'])}, test={len(datasets['test'])}"
@@ -924,6 +940,7 @@ def train_baseline(
             log_every_batches=config.training.log_every_batches,
             use_amp=use_amp,
             pin_memory=config.training.pin_memory,
+            memory_guard=memory_guard,
         )
         val_metrics = evaluate_model(
             model,
@@ -934,6 +951,7 @@ def train_baseline(
             log_every_batches=config.training.log_every_batches,
             use_amp=use_amp,
             pin_memory=config.training.pin_memory,
+            memory_guard=memory_guard,
         )
 
         epoch_record = {
@@ -994,6 +1012,7 @@ def train_baseline(
             log_every_batches=config.training.log_every_batches,
             use_amp=use_amp,
             pin_memory=config.training.pin_memory,
+            memory_guard=memory_guard,
         ),
     }
     eval_test = {
@@ -1009,6 +1028,7 @@ def train_baseline(
             log_every_batches=config.training.log_every_batches,
             use_amp=use_amp,
             pin_memory=config.training.pin_memory,
+            memory_guard=memory_guard,
         ),
     }
     _write_eval_file(run_dir, split="val", metrics=eval_val)
@@ -1020,6 +1040,7 @@ def train_baseline(
         "prepared_root": str(config.prepared_root),
         "device": str(device),
         "amp_enabled": use_amp,
+        "memory_guard": None if memory_guard is None else memory_guard.config.to_dict(),
         "dataset_sizes": {split: len(dataset) for split, dataset in datasets.items()},
         "start_epoch": start_epoch,
         "best_epoch": best_epoch,
@@ -1043,6 +1064,7 @@ def train_pointer(
     config: PointerConfig,
     *,
     resume_run_dir: str | Path | None = None,
+    memory_guard: MemoryGuard | None = None,
 ) -> dict[str, object]:
     """Train pointer-based argument selection model."""
     metadata = load_prepared_metadata(config.prepared_root)
@@ -1102,6 +1124,9 @@ def train_pointer(
     console_print(f"  Prepared cache           : {config.prepared_root}")
     console_print(f"  Device                   : {device}")
     console_print(f"  AMP enabled              : {use_amp}")
+    if memory_guard is not None:
+        console_print(f"  Memory guard             : {memory_guard.describe()}")
+        _write_json(run_dir / "memory_guard.json", memory_guard.config.to_dict())
     console_print(
         f"  Split sizes              : train={len(datasets['train'])}, "
         f"val={len(datasets['val'])}, test={len(datasets['test'])}"
@@ -1136,6 +1161,7 @@ def train_pointer(
             log_every_batches=config.training.log_every_batches,
             use_amp=use_amp,
             pin_memory=config.training.pin_memory,
+            memory_guard=memory_guard,
         )
         val_metrics = evaluate_model_with_args(
             model,
@@ -1147,6 +1173,7 @@ def train_pointer(
             log_every_batches=config.training.log_every_batches,
             use_amp=use_amp,
             pin_memory=config.training.pin_memory,
+            memory_guard=memory_guard,
         )
 
         epoch_record = {
@@ -1208,6 +1235,7 @@ def train_pointer(
             log_every_batches=config.training.log_every_batches,
             use_amp=use_amp,
             pin_memory=config.training.pin_memory,
+            memory_guard=memory_guard,
         ),
     }
     eval_test = {
@@ -1224,6 +1252,7 @@ def train_pointer(
             log_every_batches=config.training.log_every_batches,
             use_amp=use_amp,
             pin_memory=config.training.pin_memory,
+            memory_guard=memory_guard,
         ),
     }
     _write_eval_file(run_dir, split="val", metrics=eval_val)
@@ -1235,6 +1264,7 @@ def train_pointer(
         "prepared_root": str(config.prepared_root),
         "device": str(device),
         "amp_enabled": use_amp,
+        "memory_guard": None if memory_guard is None else memory_guard.config.to_dict(),
         "dataset_sizes": {split: len(dataset) for split, dataset in datasets.items()},
         "start_epoch": start_epoch,
         "best_epoch": best_epoch,
@@ -1338,6 +1368,7 @@ def build_train_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional override for the number of training epochs",
     )
+    add_memory_guard_args(parser)
     return parser
 
 
@@ -1366,7 +1397,12 @@ def train_main(argv: list[str] | None = None) -> int:
             if args.resume_run_dir:
                 resume_config_path = Path(args.resume_run_dir) / "config.json"
                 config = load_baseline_config(resume_config_path, epochs_override=args.epochs)
-                train_baseline(config, resume_run_dir=args.resume_run_dir)
+                device = resolve_device(config.device)
+                train_baseline(
+                    config,
+                    resume_run_dir=args.resume_run_dir,
+                    memory_guard=memory_guard_from_args(args, device=device),
+                )
             else:
                 config = load_baseline_config(
                     config_path,
@@ -1374,13 +1410,19 @@ def train_main(argv: list[str] | None = None) -> int:
                     run_root_override=args.run_root,
                     epochs_override=args.epochs,
                 )
-                train_baseline(config)
+                device = resolve_device(config.device)
+                train_baseline(config, memory_guard=memory_guard_from_args(args, device=device))
         elif model_type == "pointer":
             config_path = args.config or DEFAULT_POINTER_CONFIG_PATH
             if args.resume_run_dir:
                 resume_config_path = Path(args.resume_run_dir) / "config.json"
                 config = load_pointer_config(resume_config_path, epochs_override=args.epochs)
-                train_pointer(config, resume_run_dir=args.resume_run_dir)
+                device = resolve_device(config.device)
+                train_pointer(
+                    config,
+                    resume_run_dir=args.resume_run_dir,
+                    memory_guard=memory_guard_from_args(args, device=device),
+                )
             else:
                 config = load_pointer_config(
                     config_path,
@@ -1388,11 +1430,12 @@ def train_main(argv: list[str] | None = None) -> int:
                     run_root_override=args.run_root,
                     epochs_override=args.epochs,
                 )
-                train_pointer(config)
+                device = resolve_device(config.device)
+                train_pointer(config, memory_guard=memory_guard_from_args(args, device=device))
         else:
             console_print(f"  ERROR: Unknown model type '{model_type}'")
             return 1
-    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+    except (FileNotFoundError, MemoryLimitExceeded, RuntimeError, ValueError) as exc:
         console_print(f"  ERROR: {exc}")
         return 1
 
