@@ -54,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--index-path", type=str, required=True, help="Path to FAISS index built from the baseline")
     parser.add_argument("--run-root", type=str, default="runs/premise_gnn", help="Directory to save run logs and checkpoints")
     parser.add_argument("--epochs", type=int, default=None, help="Optional override for number of training epochs")
+    parser.add_argument("--k", type=int, default=None, help="Optional override for number of retrieved lemmas per proof state")
     args = parser.parse_args(argv)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -66,6 +67,15 @@ def main(argv: list[str] | None = None) -> int:
     with open(args.premise_config, "r") as f:
         p_cfg_dict = json.load(f)
         p_config = PremiseScorerConfig(**p_cfg_dict)
+    if args.k is not None:
+        p_config = PremiseScorerConfig(
+            hidden_dim=p_config.hidden_dim,
+            scoring_mode=p_config.scoring_mode,
+            tactic_conditioning=p_config.tactic_conditioning,
+            premise_loss_weight=p_config.premise_loss_weight,
+            k=args.k,
+            rerank_size=p_config.rerank_size,
+        )
 
     run_dir = _create_run_dir(Path(args.run_root))
     console_print(f"Saving run to {run_dir}")
@@ -74,6 +84,7 @@ def main(argv: list[str] | None = None) -> int:
     # Load Lemma Index
     console_print(f"Loading lemma index from {args.index_path}...")
     lemma_index = LemmaIndex.load(Path(args.index_path))
+    console_print(f"Premise retrieval k: {p_config.k}")
 
     # Build Dataloaders
     datasets, loaders = build_dataloaders(metadata, config)
