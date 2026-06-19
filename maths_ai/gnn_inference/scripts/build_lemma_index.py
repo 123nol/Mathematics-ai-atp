@@ -164,8 +164,8 @@ def build_index(
 
         batch_data = Batch.from_data_list(data_list).to(device)
         with torch.no_grad():
-            node_embeddings = model.encode_nodes(batch_data)
-            state_emb = model.readout(node_embeddings, batch_data)
+            node_embeddings = model.backbone.encode_nodes(batch_data)
+            state_emb = model.backbone.readout(node_embeddings, batch_data)
         vectors = state_emb.detach().cpu().numpy().astype(np.float32)
 
         lemma_ids.extend(batch_ids)
