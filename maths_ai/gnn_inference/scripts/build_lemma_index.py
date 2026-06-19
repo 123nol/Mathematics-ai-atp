@@ -48,6 +48,14 @@ def _normalize_rows(array: np.ndarray) -> np.ndarray:
     return array / norms
 
 
+def _lemma_text(record, *, mode: str) -> str:
+    if mode == "statement":
+        return record.statement
+    if mode == "name_statement":
+        return f"{record.name} {record.statement}"
+    raise ValueError("lemma text mode must be 'statement' or 'name_statement'.")
+
+
 def _load_config_from_checkpoint(
     checkpoint_path: Path,
     *,
@@ -113,6 +121,7 @@ def build_index(
     batch_size: int,
     limit: int | None,
     normalize: bool,
+    lemma_text_mode: str,
 ) -> IndexBuildResult:
     import faiss
 
@@ -144,7 +153,7 @@ def build_index(
         batch_ids: list[int] = []
         for record in batch:
             try:
-                dag = lemma_statement_to_dag(record.statement)
+                dag = lemma_statement_to_dag(_lemma_text(record, mode=lemma_text_mode))
                 data = dag_to_pyg(dag, metadata.node_vocab)
                 data.state_node_index = torch.tensor([_state_node_id(dag)], dtype=torch.long)
                 data.edge_index = transform_edge_index(data.edge_index, edge_mode=edge_mode)
@@ -201,6 +210,7 @@ def build_index(
         "edge_mode": edge_mode,
         "batch_size": batch_size,
         "normalize": normalize,
+        "lemma_text_mode": lemma_text_mode,
         "total_count": len(records),
         "success_count": len(lemma_ids),
         "failure_count": len(failures),
@@ -226,6 +236,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=128, help="Batch size for embedding")
     parser.add_argument("--limit", type=int, default=None, help="Optional cap on lemmas")
     parser.add_argument("--normalize", action="store_true", help="L2-normalize embeddings")
+    parser.add_argument(
+        "--lemma-text-mode",
+        type=str,
+        default="statement",
+        choices=("statement", "name_statement"),
+        help="How to build lemma graphs for indexing",
+    )
     return parser
 
 
@@ -245,6 +262,7 @@ def main(argv: list[str] | None = None) -> int:
             batch_size=int(args.batch_size),
             limit=args.limit,
             normalize=bool(args.normalize),
+            lemma_text_mode=str(args.lemma_text_mode),
         )
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         print(f"ERROR: {exc}")

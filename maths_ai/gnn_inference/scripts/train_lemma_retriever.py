@@ -21,6 +21,7 @@ if __package__ in {None, ""}:
         sys.path.insert(0, repo_root_str)
 
 from maths_ai.gnn_inference.atp_lean_gnn.graph import lemma_statement_to_dag
+from maths_ai.gnn_inference.atp_lean_gnn.lemma_index import LemmaIndex
 from maths_ai.gnn_inference.atp_lean_gnn.lemma_corpus import LemmaRecord, load_lemma_corpus
 from maths_ai.gnn_inference.atp_lean_gnn.logger import TrainingLogger
 from maths_ai.gnn_inference.atp_lean_gnn.pyg import dag_to_pyg
@@ -43,12 +44,28 @@ class RetrieverBatch:
     positive_count: int
 
 
+def _lemma_text(record: LemmaRecord, *, mode: str) -> str:
+    if mode == "statement":
+        return record.statement
+    if mode == "name_statement":
+        return f"{record.name} {record.statement}"
+    raise ValueError("lemma text mode must be 'statement' or 'name_statement'.")
+
+
 class LemmaGraphCache:
-    def __init__(self, *, records: list[LemmaRecord], node_vocab: dict[str, int], edge_mode: str) -> None:
+    def __init__(
+        self,
+        *,
+        records: list[LemmaRecord],
+        node_vocab: dict[str, int],
+        edge_mode: str,
+        lemma_text_mode: str,
+    ) -> None:
         self.records_by_id = {record.lemma_id: record for record in records}
         self.lemma_ids = list(self.records_by_id)
         self.node_vocab = node_vocab
         self.edge_mode = edge_mode
+        self.lemma_text_mode = lemma_text_mode
         self._cache: dict[int, Data | None] = {}
 
     def get(self, lemma_id: int) -> Data | None:
@@ -61,7 +78,7 @@ class LemmaGraphCache:
             return None
 
         try:
-            dag = lemma_statement_to_dag(record.statement)
+            dag = lemma_statement_to_dag(_lemma_text(record, mode=self.lemma_text_mode))
             data = dag_to_pyg(dag, self.node_vocab)
             state_ids = [node.id for node in dag.nodes if node.label == "State"]
             if not state_ids:
@@ -116,9 +133,9 @@ def _load_checkpoint_state_dict(model, checkpoint_path: Path, device: torch.devi
     model.load_state_dict(adjusted_state_dict, strict=False)
 
 
-def _extract_first_lemma_targets(batch, max_args: int) -> list[int]:
+def _extract_lemma_targets(batch, max_args: int) -> list[list[int]]:
     batch_size = int(batch.y.size(0)) if hasattr(batch, "y") else 1
-    targets = [-1] * batch_size
+    targets: list[list[int]] = [[] for _ in range(batch_size)]
     if not (hasattr(batch, "arg_lemma_ids") and hasattr(batch, "arg_count")):
         return targets
 
@@ -129,12 +146,45 @@ def _extract_first_lemma_targets(batch, max_args: int) -> list[int]:
         n_copy = min(int(count), max_args)
         if n_copy > 0:
             values = flat_targets[offset : offset + n_copy].tolist()
-            for value in values:
-                if int(value) >= 0:
-                    targets[sample_index] = int(value)
-                    break
+            targets[sample_index] = [int(value) for value in values if int(value) >= 0]
         offset += int(count)
     return targets
+
+
+def _mine_hard_negatives(
+    *,
+    model,
+    batch,
+    lemma_index: LemmaIndex | None,
+    targets_by_sample: list[list[int]],
+    hard_negatives: int,
+) -> list[int]:
+    if lemma_index is None or hard_negatives <= 0:
+        return []
+
+    with torch.no_grad():
+        node_embeddings = model.backbone.encode_nodes(batch)
+        state_emb = model.backbone.readout(node_embeddings, batch)
+    retrieved_ids_batch, _vectors, _scores = lemma_index.search(
+        state_emb,
+        k=hard_negatives + max((len(targets) for targets in targets_by_sample), default=0) + 8,
+    )
+
+    hard_ids: list[int] = []
+    seen: set[int] = set()
+    for target_ids, retrieved_ids in zip(targets_by_sample, retrieved_ids_batch):
+        excluded = set(target_ids)
+        added_for_sample = 0
+        for lemma_id in retrieved_ids:
+            lemma_id = int(lemma_id)
+            if lemma_id < 0 or lemma_id in excluded or lemma_id in seen:
+                continue
+            hard_ids.append(lemma_id)
+            seen.add(lemma_id)
+            added_for_sample += 1
+            if added_for_sample >= hard_negatives:
+                break
+    return hard_ids
 
 
 def _build_retriever_batch(
@@ -143,27 +193,34 @@ def _build_retriever_batch(
     graph_cache: LemmaGraphCache,
     max_args: int,
     random_negatives: int,
+    hard_negative_ids: list[int],
     device: torch.device,
 ) -> RetrieverBatch | None:
-    first_targets = _extract_first_lemma_targets(batch, max_args)
+    targets_by_sample = _extract_lemma_targets(batch, max_args)
     state_indices: list[int] = []
     positive_lemma_ids: list[int] = []
     lemma_data_list: list[Data] = []
 
-    for sample_index, lemma_id in enumerate(first_targets):
-        if lemma_id < 0:
-            continue
-        lemma_data = graph_cache.get(lemma_id)
-        if lemma_data is None:
-            continue
-        state_indices.append(sample_index)
-        positive_lemma_ids.append(lemma_id)
-        lemma_data_list.append(lemma_data)
+    for sample_index, lemma_ids in enumerate(targets_by_sample):
+        for lemma_id in lemma_ids:
+            lemma_data = graph_cache.get(lemma_id)
+            if lemma_data is None:
+                continue
+            state_indices.append(sample_index)
+            positive_lemma_ids.append(lemma_id)
+            lemma_data_list.append(lemma_data)
 
     if len(state_indices) < 2:
         return None
 
     positive_set = set(positive_lemma_ids)
+    for negative_id in hard_negative_ids:
+        if negative_id in positive_set:
+            continue
+        lemma_data = graph_cache.get(negative_id)
+        if lemma_data is not None:
+            lemma_data_list.append(lemma_data)
+
     for negative_id in graph_cache.sample_negatives(count=random_negatives, excluded=positive_set):
         lemma_data = graph_cache.get(negative_id)
         if lemma_data is not None:
@@ -227,6 +284,8 @@ def _run_epoch(
     device: torch.device,
     max_args: int,
     random_negatives: int,
+    hard_negative_index: LemmaIndex | None,
+    hard_negatives: int,
     temperature: float,
     grad_clip: float,
     train: bool,
@@ -249,11 +308,20 @@ def _run_epoch(
 
     for batch_index, batch in enumerate(loader, start=1):
         batch = batch.to(device)
+        targets_by_sample = _extract_lemma_targets(batch, max_args)
+        hard_negative_ids = _mine_hard_negatives(
+            model=model,
+            batch=batch,
+            lemma_index=hard_negative_index if train else None,
+            targets_by_sample=targets_by_sample,
+            hard_negatives=hard_negatives if train else 0,
+        )
         retriever_batch = _build_retriever_batch(
             batch=batch,
             graph_cache=graph_cache,
             max_args=max_args,
             random_negatives=random_negatives if train else 0,
+            hard_negative_ids=hard_negative_ids,
             device=device,
         )
         if retriever_batch is None:
@@ -320,6 +388,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weight-decay", type=float, default=1e-4, help="Optimizer weight decay")
     parser.add_argument("--temperature", type=float, default=0.07, help="Contrastive softmax temperature")
     parser.add_argument("--random-negatives", type=int, default=256, help="Random lemma negatives per batch")
+    parser.add_argument("--hard-negative-index", type=str, default=None, help="Optional FAISS index used to mine hard negative lemmas")
+    parser.add_argument("--hard-negatives", type=int, default=0, help="Hard negatives mined per lemma-target sample")
+    parser.add_argument(
+        "--lemma-text-mode",
+        type=str,
+        default="statement",
+        choices=("statement", "name_statement"),
+        help="How to build lemma graphs for retriever training",
+    )
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping norm")
     parser.add_argument("--device", type=str, default="auto", help="auto, cpu, or cuda")
     parser.add_argument("--log-every-batches", type=int, default=100, help="Batch logging interval")
@@ -353,6 +430,12 @@ def main(argv: list[str] | None = None) -> int:
         records=records,
         node_vocab=metadata.node_vocab,
         edge_mode=config.edge_mode,
+        lemma_text_mode=str(args.lemma_text_mode),
+    )
+    hard_negative_index = (
+        None
+        if args.hard_negative_index is None
+        else LemmaIndex.load(Path(args.hard_negative_index))
     )
 
     _datasets, loaders = build_dataloaders(metadata, config)
@@ -374,6 +457,9 @@ def main(argv: list[str] | None = None) -> int:
         "weight_decay": float(args.weight_decay),
         "temperature": float(args.temperature),
         "random_negatives": int(args.random_negatives),
+        "hard_negative_index": None if args.hard_negative_index is None else str(args.hard_negative_index),
+        "hard_negatives": int(args.hard_negatives),
+        "lemma_text_mode": str(args.lemma_text_mode),
     }
     (run_dir / "config.json").write_text(json.dumps(config.to_dict(), indent=2), encoding="utf-8")
     (run_dir / "retriever_config.json").write_text(
@@ -391,6 +477,8 @@ def main(argv: list[str] | None = None) -> int:
             device=device,
             max_args=model.max_args,
             random_negatives=int(args.random_negatives),
+            hard_negative_index=hard_negative_index,
+            hard_negatives=int(args.hard_negatives),
             temperature=float(args.temperature),
             grad_clip=float(args.grad_clip),
             train=True,
@@ -408,6 +496,8 @@ def main(argv: list[str] | None = None) -> int:
             device=device,
             max_args=model.max_args,
             random_negatives=0,
+            hard_negative_index=None,
+            hard_negatives=0,
             temperature=float(args.temperature),
             grad_clip=float(args.grad_clip),
             train=False,
