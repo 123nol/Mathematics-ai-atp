@@ -53,13 +53,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to baseline checkpoint (best.pt)")
     parser.add_argument("--index-path", type=str, required=True, help="Path to FAISS index built from the baseline")
     parser.add_argument("--run-root", type=str, default="runs/premise_gnn", help="Directory to save run logs and checkpoints")
+    parser.add_argument("--epochs", type=int, default=None, help="Optional override for number of training epochs")
     args = parser.parse_args(argv)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_amp = device.type == "cuda"
     
     # Load configs
-    config = load_pointer_config(Path(args.config))
+    config = load_pointer_config(Path(args.config), epochs_override=args.epochs)
     metadata = load_prepared_metadata(config.prepared_root)
     
     with open(args.premise_config, "r") as f:
