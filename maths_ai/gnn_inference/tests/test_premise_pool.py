@@ -9,7 +9,11 @@ from maths_ai.gnn_inference.atp_lean_gnn.premise_pool import build_unified_pools
 
 
 class _FakeLemmaIndex:
+    def __init__(self) -> None:
+        self.last_goal_vecs = None
+
     def search(self, goal_vecs, *, k):
+        self.last_goal_vecs = goal_vecs.detach().clone()
         batch_size = int(goal_vecs.size(0))
         dim = int(goal_vecs.size(1))
         lemma_ids = []
@@ -65,3 +69,23 @@ class PremisePoolTests(unittest.TestCase):
         self.assertEqual(pool1.candidate_sources.count("local"), 2)
         self.assertEqual(pool1.candidate_sources.count("lemma"), 2)
         self.assertEqual(pool1.candidate_vectors.shape[0], 4)
+
+    def test_uses_retrieval_state_vectors_for_lemma_search(self) -> None:
+        goal_vecs = torch.zeros(2, 4)
+        retrieval_vecs = torch.ones(2, 4)
+        node_embeddings = torch.randn(4, 4)
+        premise_mask = torch.tensor([True, False, True, False])
+        batch_index = torch.tensor([0, 0, 1, 1], dtype=torch.long)
+        lemma_index = _FakeLemmaIndex()
+
+        build_unified_pools(
+            goal_vecs,
+            node_embeddings,
+            premise_mask,
+            batch_index,
+            lemma_index=lemma_index,
+            k=2,
+            retrieval_state_vecs=retrieval_vecs,
+        )
+
+        self.assertTrue(torch.equal(lemma_index.last_goal_vecs, retrieval_vecs))

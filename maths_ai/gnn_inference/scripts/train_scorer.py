@@ -51,11 +51,64 @@ def _create_run_dir(run_root: Path) -> Path:
     return candidate
 
 
+def _load_pointer_checkpoint_model(
+    *,
+    metadata,
+    config,
+    checkpoint_path: Path,
+    device: torch.device,
+):
+    from maths_ai.gnn_inference.atp_lean_gnn.argument_selector import TacticWithArgsClassifier
+
+    model = TacticWithArgsClassifier(
+        num_node_labels=len(metadata.node_vocab),
+        num_tactics=len(metadata.tactic_vocab),
+        hidden_dim=config.model.hidden_dim,
+        num_layers=config.model.num_layers,
+        dropout=config.model.dropout,
+        use_node_type=config.use_node_type,
+        max_args=getattr(config, "max_args", 3),
+    )
+
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    state_dict = ckpt["model_state_dict"] if "model_state_dict" in ckpt else ckpt
+
+    adjusted_state_dict = {}
+    for key, value in state_dict.items():
+        if key.startswith(("backbone.", "tactic_embedding.", "argument_selector.")):
+            adjusted_state_dict[key] = value
+        else:
+            adjusted_state_dict[f"backbone.{key}"] = value
+
+    model.load_state_dict(adjusted_state_dict, strict=False)
+
+    has_trained_tactic_embedding = any(
+        key.startswith("tactic_embedding.") for key in adjusted_state_dict
+    )
+    if not has_trained_tactic_embedding:
+        with torch.no_grad():
+            model.tactic_embedding.weight.copy_(model.backbone.classifier.weight)
+
+    return model.to(device)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Train Premise Scorer")
     parser.add_argument("--config", type=str, required=True, help="Path to baseline config")
     parser.add_argument("--premise-config", type=str, default="configs/premise_scoring.json", help="Path to premise scoring config")
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to baseline checkpoint (best.pt)")
+    parser.add_argument(
+        "--retriever-config",
+        type=str,
+        default=None,
+        help="Optional retriever config for FAISS query embeddings",
+    )
+    parser.add_argument(
+        "--retriever-checkpoint",
+        type=str,
+        default=None,
+        help="Optional retriever checkpoint for FAISS query embeddings",
+    )
     parser.add_argument("--index-path", type=str, required=True, help="Path to FAISS index built from the baseline")
     parser.add_argument("--run-root", type=str, default="runs/premise_gnn", help="Directory to save run logs and checkpoints")
     parser.add_argument("--epochs", type=int, default=None, help="Optional override for number of training epochs")
@@ -71,6 +124,16 @@ def main(argv: list[str] | None = None) -> int:
         # Load configs
         config = load_pointer_config(Path(args.config), epochs_override=args.epochs)
         metadata = load_prepared_metadata(config.prepared_root)
+        if bool(args.retriever_config) != bool(args.retriever_checkpoint):
+            raise ValueError("--retriever-config and --retriever-checkpoint must be provided together.")
+        retriever_config = None
+        if args.retriever_config is not None:
+            retriever_config = load_pointer_config(Path(args.retriever_config))
+            if retriever_config.prepared_root != config.prepared_root:
+                raise ValueError(
+                    "Retriever config prepared_root must match the pointer config prepared_root "
+                    "so proof-state graph token IDs are compatible."
+                )
 
         with open(args.premise_config, "r") as f:
             p_cfg_dict = json.load(f)
@@ -92,6 +155,24 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(memory_guard.config.to_dict(), indent=2, sort_keys=True),
             encoding="utf-8",
         )
+        (run_dir / "scorer_run_config.json").write_text(
+            json.dumps(
+                {
+                    "pointer_config": str(args.config),
+                    "pointer_checkpoint": str(args.checkpoint),
+                    "retriever_config": None if args.retriever_config is None else str(args.retriever_config),
+                    "retriever_checkpoint": None if args.retriever_checkpoint is None else str(args.retriever_checkpoint),
+                    "index_path": str(args.index_path),
+                    "premise_config": str(args.premise_config),
+                    "epochs": None if args.epochs is None else int(args.epochs),
+                    "k": p_config.k,
+                    "memory_guard": memory_guard.config.to_dict(),
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
         logger = TrainingLogger(run_dir)
 
         # Load Lemma Index
@@ -102,44 +183,29 @@ def main(argv: list[str] | None = None) -> int:
         # Build Dataloaders
         datasets, loaders = build_dataloaders(metadata, config)
 
-        # Load baseline model and wrap it in TacticWithArgsClassifier
-        from maths_ai.gnn_inference.atp_lean_gnn.argument_selector import TacticWithArgsClassifier
-
-        model = TacticWithArgsClassifier(
-            num_node_labels=len(metadata.node_vocab),
-            num_tactics=len(metadata.tactic_vocab),
-            hidden_dim=config.model.hidden_dim,
-            num_layers=config.model.num_layers,
-            dropout=config.model.dropout,
-            use_node_type=config.use_node_type,
-            max_args=getattr(config, "max_args", 3),
+        model = _load_pointer_checkpoint_model(
+            metadata=metadata,
+            config=config,
+            checkpoint_path=Path(args.checkpoint),
+            device=device,
         )
 
-        ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
-        state_dict = ckpt["model_state_dict"] if "model_state_dict" in ckpt else ckpt
-
-        # Adjust state dict keys if they come from a pure baseline (GraphSAGEStateClassifier)
-        adjusted_state_dict = {}
-        for k, v in state_dict.items():
-            if not k.startswith("backbone.") and not k.startswith("tactic_embedding.") and not k.startswith("argument_selector."):
-                adjusted_state_dict[f"backbone.{k}"] = v
-            else:
-                adjusted_state_dict[k] = v
-
-        model.load_state_dict(adjusted_state_dict, strict=False)
-
-        has_trained_tactic_embedding = any(
-            k.startswith("tactic_embedding.") for k in adjusted_state_dict
-        )
-        if not has_trained_tactic_embedding:
-            with torch.no_grad():
-                model.tactic_embedding.weight.copy_(model.backbone.classifier.weight)
+        retrieval_model = None
+        if retriever_config is not None:
+            retrieval_model = _load_pointer_checkpoint_model(
+                metadata=metadata,
+                config=retriever_config,
+                checkpoint_path=Path(args.retriever_checkpoint),
+                device=device,
+            )
+            for param in retrieval_model.parameters():
+                param.requires_grad = False
+            retrieval_model.eval()
+            console_print(f"Using retriever query checkpoint: {args.retriever_checkpoint}")
 
         # Freeze the GNN backbone (keeps embeddings compatible with FAISS index)
         for param in model.backbone.parameters():
             param.requires_grad = False
-
-        model = model.to(device)
 
         # Build Premise Scorer
         scorer = PremiseScorer(hidden_dim=config.model.hidden_dim, mode=p_config.scoring_mode)
@@ -187,6 +253,7 @@ def main(argv: list[str] | None = None) -> int:
                 use_amp=use_amp,
                 pin_memory=config.training.pin_memory,
                 memory_guard=memory_guard,
+                retrieval_model=retrieval_model,
             )
 
             val_metrics = evaluate_model_with_premises(
@@ -204,6 +271,7 @@ def main(argv: list[str] | None = None) -> int:
                 use_amp=use_amp,
                 pin_memory=config.training.pin_memory,
                 memory_guard=memory_guard,
+                retrieval_model=retrieval_model,
             )
 
             console_print(
@@ -221,6 +289,8 @@ def main(argv: list[str] | None = None) -> int:
                     "epoch": epoch,
                     "model_state_dict": model.state_dict(),
                     "scorer_state_dict": scorer.state_dict(),
+                    "retriever_config": None if args.retriever_config is None else str(args.retriever_config),
+                    "retriever_checkpoint": None if args.retriever_checkpoint is None else str(args.retriever_checkpoint),
                     "val_metrics": val_metrics,
                 }, run_dir / "best.pt")
 

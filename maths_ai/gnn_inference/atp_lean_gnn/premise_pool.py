@@ -35,17 +35,23 @@ def build_unified_pools(
     *,
     lemma_index: LemmaIndexLike,
     k: int = 500,
+    retrieval_state_vecs: Tensor | None = None,
 ) -> list[CandidatePool]:
     """Return per-graph candidate pools combining local and library premises."""
     if state_vecs.dim() != 2:
         raise ValueError("state_vecs must be [batch, hidden_dim].")
+    if retrieval_state_vecs is not None and retrieval_state_vecs.dim() != 2:
+        raise ValueError("retrieval_state_vecs must be [batch, hidden_dim].")
     if node_embeddings.dim() != 2:
         raise ValueError("node_embeddings must be [total_nodes, hidden_dim].")
 
     device = node_embeddings.device
     batch_size = int(state_vecs.size(0))
+    search_vecs = state_vecs if retrieval_state_vecs is None else retrieval_state_vecs
+    if int(search_vecs.size(0)) != batch_size:
+        raise ValueError("retrieval_state_vecs must have the same batch size as state_vecs.")
 
-    lemma_ids_batch, lemma_vecs_batch, _scores = lemma_index.search(state_vecs, k=k)
+    lemma_ids_batch, lemma_vecs_batch, _scores = lemma_index.search(search_vecs, k=k)
     if len(lemma_ids_batch) != batch_size:
         raise ValueError("lemma_index returned a batch size mismatch.")
 

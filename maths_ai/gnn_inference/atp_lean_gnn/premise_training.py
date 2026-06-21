@@ -111,10 +111,13 @@ def train_one_epoch_with_premises(
     use_amp: bool,
     pin_memory: bool,
     memory_guard: MemoryGuard | None = None,
+    retrieval_model: TacticWithArgsClassifier | None = None,
 ) -> dict[str, float | int]:
     """Train one epoch with combined tactic + argument + premise ranking loss."""
     model.train()
     model.backbone.eval()  # frozen backbone stays in eval mode
+    if retrieval_model is not None:
+        retrieval_model.eval()
     scorer.train()
 
     total_tactic_loss = 0.0
@@ -168,8 +171,17 @@ def train_one_epoch_with_premises(
             with torch.no_grad():
                 node_embeddings = model.backbone.encode_nodes(batch)
                 state_emb = model.backbone.readout(node_embeddings, batch)
+                if retrieval_model is None:
+                    retrieval_state_emb = state_emb
+                else:
+                    retrieval_node_embeddings = retrieval_model.backbone.encode_nodes(batch)
+                    retrieval_state_emb = retrieval_model.backbone.readout(
+                        retrieval_node_embeddings,
+                        batch,
+                    )
             node_embeddings = node_embeddings.detach()
             state_emb = state_emb.detach()
+            retrieval_state_emb = retrieval_state_emb.detach()
 
             # Get tactic embeddings
             tactic_emb = model.tactic_embedding(targets)
@@ -187,6 +199,7 @@ def train_one_epoch_with_premises(
                 batch.batch,
                 lemma_index=lemma_index,
                 k=k,
+                retrieval_state_vecs=retrieval_state_emb,
             )
 
             # Score candidates
@@ -261,9 +274,12 @@ def evaluate_model_with_premises(
     use_amp: bool = False,
     pin_memory: bool = False,
     memory_guard: MemoryGuard | None = None,
+    retrieval_model: TacticWithArgsClassifier | None = None,
 ) -> dict[str, float | int]:
     """Evaluate model with combined tactic + argument + premise metrics."""
     model.eval()
+    if retrieval_model is not None:
+        retrieval_model.eval()
     scorer.eval()
 
     total_tactic_loss = 0.0
@@ -329,6 +345,14 @@ def evaluate_model_with_premises(
             with torch.no_grad():
                 node_embeddings = model.backbone.encode_nodes(batch)
                 state_emb = model.backbone.readout(node_embeddings, batch)
+                if retrieval_model is None:
+                    retrieval_state_emb = state_emb
+                else:
+                    retrieval_node_embeddings = retrieval_model.backbone.encode_nodes(batch)
+                    retrieval_state_emb = retrieval_model.backbone.readout(
+                        retrieval_node_embeddings,
+                        batch,
+                    )
             tactic_ids = tactic_logits.argmax(dim=1)
             tactic_emb = model.tactic_embedding(tactic_ids)
             premise_mask = batch.premise_mask.to(
@@ -342,6 +366,7 @@ def evaluate_model_with_premises(
                 batch.batch,
                 lemma_index=lemma_index,
                 k=k,
+                retrieval_state_vecs=retrieval_state_emb,
             )
             score_list = scorer(state_emb, tactic_emb, pools)
             p_loss, p_metrics = compute_premise_ranking_loss(
