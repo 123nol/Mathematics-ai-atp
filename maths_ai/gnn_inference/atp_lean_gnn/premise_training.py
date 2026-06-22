@@ -203,7 +203,12 @@ def train_one_epoch_with_premises(
             )
 
             # Score candidates
-            score_list = scorer(state_emb, tactic_emb, pools)
+            score_list = scorer(
+                state_emb,
+                tactic_emb,
+                pools,
+                retrieval_goal_vecs=retrieval_state_emb,
+            )
 
             # Premise ranking loss
             p_loss, p_metrics = compute_premise_ranking_loss(
@@ -368,7 +373,12 @@ def evaluate_model_with_premises(
                 k=k,
                 retrieval_state_vecs=retrieval_state_emb,
             )
-            score_list = scorer(state_emb, tactic_emb, pools)
+            score_list = scorer(
+                state_emb,
+                tactic_emb,
+                pools,
+                retrieval_goal_vecs=retrieval_state_emb,
+            )
             p_loss, p_metrics = compute_premise_ranking_loss(
                 score_list, pools, arg_targets, arg_lemma_targets
             )

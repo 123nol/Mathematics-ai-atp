@@ -113,6 +113,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-root", type=str, default="runs/premise_gnn", help="Directory to save run logs and checkpoints")
     parser.add_argument("--epochs", type=int, default=None, help="Optional override for number of training epochs")
     parser.add_argument("--k", type=int, default=None, help="Optional override for number of retrieved lemmas per proof state")
+    parser.add_argument(
+        "--freeze-pointer-heads",
+        action="store_true",
+        help="Train only the premise scorer and keep tactic/argument heads fixed",
+    )
     add_memory_guard_args(parser)
     args = parser.parse_args(argv)
 
@@ -165,6 +170,7 @@ def main(argv: list[str] | None = None) -> int:
                     "index_path": str(args.index_path),
                     "premise_config": str(args.premise_config),
                     "epochs": None if args.epochs is None else int(args.epochs),
+                    "freeze_pointer_heads": bool(args.freeze_pointer_heads),
                     "k": p_config.k,
                     "memory_guard": memory_guard.config.to_dict(),
                 },
@@ -211,17 +217,26 @@ def main(argv: list[str] | None = None) -> int:
         scorer = PremiseScorer(hidden_dim=config.model.hidden_dim, mode=p_config.scoring_mode)
         scorer = scorer.to(device)
 
-        # Only train: tactic_embedding, argument_selector, and scorer
-        trainable_params = (
-            list(model.tactic_embedding.parameters())
-            + list(model.argument_selector.parameters())
-            + list(scorer.parameters())
-        )
+        if args.freeze_pointer_heads:
+            for param in model.tactic_embedding.parameters():
+                param.requires_grad = False
+            for param in model.argument_selector.parameters():
+                param.requires_grad = False
+            trainable_params = list(scorer.parameters())
+            trainable_label = "scorer only"
+        else:
+            # Only train: tactic_embedding, argument_selector, and scorer
+            trainable_params = (
+                list(model.tactic_embedding.parameters())
+                + list(model.argument_selector.parameters())
+                + list(scorer.parameters())
+            )
+            trainable_label = "pointer + scorer + tactic_emb"
         frozen_count = sum(p.numel() for p in model.backbone.parameters())
         trainable_count = sum(p.numel() for p in trainable_params)
         console_print(
             f"Parameters — frozen backbone: {frozen_count:,}, "
-            f"trainable (pointer + scorer + tactic_emb): {trainable_count:,}"
+            f"trainable ({trainable_label}): {trainable_count:,}"
         )
 
         optimizer = AdamW(

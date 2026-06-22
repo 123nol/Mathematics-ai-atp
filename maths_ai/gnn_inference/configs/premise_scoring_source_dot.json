@@ -1,0 +1,7 @@
+{
+  "k": 2000,
+  "rerank_size": 50,
+  "scoring_mode": "source_dot",
+  "tactic_conditioning": "soft",
+  "premise_loss_weight": 0.3
+}

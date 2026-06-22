@@ -124,6 +124,38 @@ class TestPremiseScorerMLP(unittest.TestCase):
         self.assertFalse(torch.allclose(dot_scores, mlp_scores))
 
 
+class TestPremiseScorerSourceDot(unittest.TestCase):
+    def setUp(self) -> None:
+        self.hidden_dim = 8
+        self.scorer = PremiseScorer(self.hidden_dim, mode="source_dot")
+
+    def test_forward_with_retrieval_goal_vectors(self) -> None:
+        batch_size = 2
+        pools = [_make_pool(hidden_dim=self.hidden_dim) for _ in range(batch_size)]
+        goal_vecs = torch.randn(batch_size, self.hidden_dim)
+        retrieval_goal_vecs = torch.randn(batch_size, self.hidden_dim)
+        tactic_embs = torch.randn(batch_size, self.hidden_dim)
+
+        scores = self.scorer(
+            goal_vecs,
+            tactic_embs,
+            pools,
+            retrieval_goal_vecs=retrieval_goal_vecs,
+        )
+
+        self.assertEqual(len(scores), batch_size)
+        for i, score in enumerate(scores):
+            self.assertEqual(score.shape, (len(pools[i].candidate_ids),))
+
+    def test_score_requires_candidate_sources(self) -> None:
+        goal = torch.randn(self.hidden_dim)
+        tactic = torch.randn(self.hidden_dim)
+        candidates = torch.randn(3, self.hidden_dim)
+
+        with self.assertRaises(ValueError):
+            self.scorer.score(goal, tactic, candidates)
+
+
 class TestFindTargetIndex(unittest.TestCase):
     def test_local_match(self) -> None:
         pool = _make_pool(num_local=3, num_lemma=2, hidden_dim=4)

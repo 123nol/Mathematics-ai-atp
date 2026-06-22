@@ -5,6 +5,7 @@ that scores mixed candidate pools (local hypotheses + library lemmas) against
 a goal embedding.  Two scoring modes are supported:
 
 - **dot**: Scaled dot-product between a projected query and candidate vectors.
+- **source_dot**: Source-aware dot-product with separate local/lemma projections.
 - **mlp**: A two-layer MLP that takes the concatenation of query and candidate.
 
 The ``compute_premise_ranking_loss`` function computes cross-entropy ranking
@@ -28,7 +29,7 @@ class PremiseScorerConfig:
     """Configuration for the premise scoring head."""
 
     hidden_dim: int = 128
-    scoring_mode: str = "dot"  # "dot" or "mlp"
+    scoring_mode: str = "dot"  # "dot", "source_dot", or "mlp"
     tactic_conditioning: str = "soft"  # "soft" or "hard"
     premise_loss_weight: float = 0.3
     k: int = 200
@@ -51,22 +52,35 @@ class PremiseScorer(nn.Module):
     hidden_dim : int
         Dimensionality of goal, tactic, and candidate embeddings.
     mode : str
-        Scoring mode — ``"dot"`` for scaled dot-product, ``"mlp"`` for a
-        learned two-layer scorer.
+        Scoring mode — ``"dot"`` for scaled dot-product, ``"source_dot"`` for
+        source-aware local/lemma dot-product, or ``"mlp"`` for a learned
+        two-layer scorer.
     """
 
     def __init__(self, hidden_dim: int, *, mode: str = "dot") -> None:
         super().__init__()
 
-        if mode not in {"dot", "mlp"}:
-            raise ValueError(f"Unsupported scoring mode '{mode}'. Use 'dot' or 'mlp'.")
+        if mode not in {"dot", "source_dot", "mlp"}:
+            raise ValueError(f"Unsupported scoring mode '{mode}'. Use 'dot', 'source_dot', or 'mlp'.")
 
         self.mode = mode
         self.hidden_dim = hidden_dim
 
-        # Project [goal_vec; tactic_emb] → hidden_dim
-        self.query_proj = nn.Linear(hidden_dim * 2, hidden_dim)
-        self.key_proj = nn.Linear(hidden_dim, hidden_dim)
+        if mode == "source_dot":
+            self.local_query_proj = nn.Linear(hidden_dim * 2, hidden_dim)
+            self.local_key_proj = nn.Linear(hidden_dim, hidden_dim)
+            self.lemma_query_proj = nn.Linear(hidden_dim * 2, hidden_dim)
+            self.lemma_key_proj = nn.Linear(hidden_dim, hidden_dim)
+            self.query_proj = None
+            self.key_proj = None
+        else:
+            # Project [goal_vec; tactic_emb] -> hidden_dim
+            self.query_proj = nn.Linear(hidden_dim * 2, hidden_dim)
+            self.key_proj = nn.Linear(hidden_dim, hidden_dim)
+            self.local_query_proj = None
+            self.local_key_proj = None
+            self.lemma_query_proj = None
+            self.lemma_key_proj = None
 
         if mode == "mlp":
             self.scorer = nn.Sequential(
@@ -84,6 +98,9 @@ class PremiseScorer(nn.Module):
         goal_vec: Tensor,
         tactic_emb: Tensor,
         candidate_vectors: Tensor,
+        *,
+        candidate_sources: list[str] | None = None,
+        retrieval_goal_vec: Tensor | None = None,
     ) -> Tensor:
         """Score each candidate against the tactic-conditioned goal.
 
@@ -95,6 +112,11 @@ class PremiseScorer(nn.Module):
             Tactic embedding, shape ``[H]`` or ``[1, H]``.
         candidate_vectors : Tensor
             Candidate embeddings, shape ``[C, H]``.
+        candidate_sources : list[str] | None
+            Candidate source labels, used by ``source_dot`` mode.
+        retrieval_goal_vec : Tensor | None
+            Retriever-space goal embedding for lemma candidates in
+            ``source_dot`` mode.
 
         Returns
         -------
@@ -104,6 +126,28 @@ class PremiseScorer(nn.Module):
         # Flatten to [H]
         goal = goal_vec.view(-1)
         tactic = tactic_emb.view(-1)
+
+        if self.mode == "source_dot":
+            if candidate_sources is None:
+                raise ValueError("candidate_sources are required for source_dot scoring.")
+            lemma_goal = goal if retrieval_goal_vec is None else retrieval_goal_vec.view(-1)
+            scores = candidate_vectors.new_empty(candidate_vectors.size(0))
+
+            local_indices = [idx for idx, source in enumerate(candidate_sources) if source == "local"]
+            if local_indices:
+                index = torch.tensor(local_indices, dtype=torch.long, device=candidate_vectors.device)
+                query = self.local_query_proj(torch.cat([goal, tactic], dim=0))
+                keys = self.local_key_proj(candidate_vectors.index_select(0, index))
+                scores.index_copy_(0, index, (keys @ query) * self._scale)
+
+            lemma_indices = [idx for idx, source in enumerate(candidate_sources) if source == "lemma"]
+            if lemma_indices:
+                index = torch.tensor(lemma_indices, dtype=torch.long, device=candidate_vectors.device)
+                query = self.lemma_query_proj(torch.cat([lemma_goal, tactic], dim=0))
+                keys = self.lemma_key_proj(candidate_vectors.index_select(0, index))
+                scores.index_copy_(0, index, (keys @ query) * self._scale)
+
+            return scores
 
         query = self.query_proj(torch.cat([goal, tactic], dim=0))
         candidate_vectors = self.key_proj(candidate_vectors)
@@ -125,6 +169,8 @@ class PremiseScorer(nn.Module):
         goal_vecs: Tensor,
         tactic_embs: Tensor,
         pools: list[CandidatePool],
+        *,
+        retrieval_goal_vecs: Tensor | None = None,
     ) -> list[Tensor]:
         """Score all candidate pools in a batch.
 
@@ -136,6 +182,9 @@ class PremiseScorer(nn.Module):
             Tactic embeddings, shape ``[B, H]``.
         pools : list[CandidatePool]
             One pool per sample in the batch.
+        retrieval_goal_vecs : Tensor | None
+            Retriever-space goal embeddings, shape ``[B, H]``. Used by
+            ``source_dot`` mode for lemma candidates.
 
         Returns
         -------
@@ -155,6 +204,8 @@ class PremiseScorer(nn.Module):
                 goal_vecs[b],
                 tactic_embs[b],
                 pools[b].candidate_vectors,
+                candidate_sources=pools[b].candidate_sources,
+                retrieval_goal_vec=None if retrieval_goal_vecs is None else retrieval_goal_vecs[b],
             )
             all_scores.append(scores)
 
