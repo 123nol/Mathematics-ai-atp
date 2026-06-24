@@ -112,9 +112,13 @@ def train_one_epoch_with_premises(
     pin_memory: bool,
     memory_guard: MemoryGuard | None = None,
     retrieval_model: TacticWithArgsClassifier | None = None,
+    scorer_only: bool = False,
 ) -> dict[str, float | int]:
     """Train one epoch with combined tactic + argument + premise ranking loss."""
-    model.train()
+    if scorer_only:
+        model.eval()
+    else:
+        model.train()
     model.backbone.eval()  # frozen backbone stays in eval mode
     if retrieval_model is not None:
         retrieval_model.eval()
@@ -148,24 +152,39 @@ def train_one_epoch_with_premises(
         optimizer.zero_grad(set_to_none=True)
 
         with torch.amp.autocast(device_type=device.type, enabled=use_amp):
-            # Forward pass through model
-            tactic_logits, arg_logits_list = model(
-                batch,
-                teacher_tactic_ids=targets,
-                tactic_names=tactic_names,
-            )
-
-            # Combined tactic + argument loss
-            ta_loss, ta_metrics = compute_combined_loss(
-                tactic_logits,
-                arg_logits_list,
-                targets,
-                arg_targets,
-                batch.batch,
-                tactic_arity_per_sample=tactic_arities,
-                arg_loss_weight=arg_loss_weight,
-                unknown_tactic_id=unknown_tactic_id,
-            )
+            if scorer_only:
+                with torch.no_grad():
+                    tactic_logits, arg_logits_list = model(
+                        batch,
+                        teacher_tactic_ids=targets,
+                        tactic_names=tactic_names,
+                    )
+                    _ta_loss, ta_metrics = compute_combined_loss(
+                        tactic_logits,
+                        arg_logits_list,
+                        targets,
+                        arg_targets,
+                        batch.batch,
+                        tactic_arity_per_sample=tactic_arities,
+                        arg_loss_weight=arg_loss_weight,
+                        unknown_tactic_id=unknown_tactic_id,
+                    )
+            else:
+                tactic_logits, arg_logits_list = model(
+                    batch,
+                    teacher_tactic_ids=targets,
+                    tactic_names=tactic_names,
+                )
+                ta_loss, ta_metrics = compute_combined_loss(
+                    tactic_logits,
+                    arg_logits_list,
+                    targets,
+                    arg_targets,
+                    batch.batch,
+                    tactic_arity_per_sample=tactic_arities,
+                    arg_loss_weight=arg_loss_weight,
+                    unknown_tactic_id=unknown_tactic_id,
+                )
 
             # Recompute embeddings (detached) for the premise scoring branch
             with torch.no_grad():
@@ -184,7 +203,12 @@ def train_one_epoch_with_premises(
             retrieval_state_emb = retrieval_state_emb.detach()
 
             # Get tactic embeddings
-            tactic_emb = model.tactic_embedding(targets)
+            if scorer_only:
+                with torch.no_grad():
+                    tactic_emb = model.tactic_embedding(targets)
+                tactic_emb = tactic_emb.detach()
+            else:
+                tactic_emb = model.tactic_embedding(targets)
 
             # Build premise mask
             premise_mask = batch.premise_mask.to(
@@ -219,7 +243,7 @@ def train_one_epoch_with_premises(
             )
 
             # Total loss
-            total_loss = ta_loss + premise_loss_weight * p_loss
+            total_loss = p_loss if scorer_only else ta_loss + premise_loss_weight * p_loss
 
         grad_scaler.scale(total_loss).backward()
         grad_scaler.unscale_(optimizer)
@@ -280,6 +304,7 @@ def evaluate_model_with_premises(
     pin_memory: bool = False,
     memory_guard: MemoryGuard | None = None,
     retrieval_model: TacticWithArgsClassifier | None = None,
+    scorer_only: bool = False,
 ) -> dict[str, float | int]:
     """Evaluate model with combined tactic + argument + premise metrics."""
     model.eval()
@@ -387,10 +412,13 @@ def evaluate_model_with_premises(
         total_tactic_loss += ta_metrics["tactic_loss"] * bs
         total_arg_loss += ta_metrics["arg_loss"] * bs
         total_premise_loss += p_metrics["premise_loss"] * bs
-        total_combined_loss += (
-            ta_metrics["total_loss"]
-            + premise_loss_weight * p_metrics["premise_loss"]
-        ) * bs
+        if scorer_only:
+            total_combined_loss += p_metrics["premise_loss"] * bs
+        else:
+            total_combined_loss += (
+                ta_metrics["total_loss"]
+                + premise_loss_weight * p_metrics["premise_loss"]
+            ) * bs
         premise_valid += p_metrics["valid_samples"]
         premise_target_present += p_metrics["target_present_count"]
         premise_top1_correct += p_metrics["top1_correct"]

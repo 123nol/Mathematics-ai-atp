@@ -171,6 +171,7 @@ def main(argv: list[str] | None = None) -> int:
                     "premise_config": str(args.premise_config),
                     "epochs": None if args.epochs is None else int(args.epochs),
                     "freeze_pointer_heads": bool(args.freeze_pointer_heads),
+                    "training_objective": "premise_loss_only" if args.freeze_pointer_heads else "tactic_argument_premise_multitask",
                     "k": p_config.k,
                     "memory_guard": memory_guard.config.to_dict(),
                 },
@@ -269,6 +270,7 @@ def main(argv: list[str] | None = None) -> int:
                 pin_memory=config.training.pin_memory,
                 memory_guard=memory_guard,
                 retrieval_model=retrieval_model,
+                scorer_only=bool(args.freeze_pointer_heads),
             )
 
             val_metrics = evaluate_model_with_premises(
@@ -287,6 +289,7 @@ def main(argv: list[str] | None = None) -> int:
                 pin_memory=config.training.pin_memory,
                 memory_guard=memory_guard,
                 retrieval_model=retrieval_model,
+                scorer_only=bool(args.freeze_pointer_heads),
             )
 
             console_print(
@@ -306,6 +309,7 @@ def main(argv: list[str] | None = None) -> int:
                     "scorer_state_dict": scorer.state_dict(),
                     "retriever_config": None if args.retriever_config is None else str(args.retriever_config),
                     "retriever_checkpoint": None if args.retriever_checkpoint is None else str(args.retriever_checkpoint),
+                    "training_objective": "premise_loss_only" if args.freeze_pointer_heads else "tactic_argument_premise_multitask",
                     "val_metrics": val_metrics,
                 }, run_dir / "best.pt")
 
