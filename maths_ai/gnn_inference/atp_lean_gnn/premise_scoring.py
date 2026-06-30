@@ -34,6 +34,8 @@ class PremiseScorerConfig:
     premise_loss_weight: float = 0.3
     k: int = 200
     rerank_size: int = 50
+    retrieval_score_weight: float = 0.0
+    retrieval_score_normalization: str = "zscore"
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -41,6 +43,10 @@ class PremiseScorerConfig:
             "scoring_mode": self.scoring_mode,
             "tactic_conditioning": self.tactic_conditioning,
             "premise_loss_weight": self.premise_loss_weight,
+            "k": self.k,
+            "rerank_size": self.rerank_size,
+            "retrieval_score_weight": self.retrieval_score_weight,
+            "retrieval_score_normalization": self.retrieval_score_normalization,
         }
 
 
@@ -57,14 +63,28 @@ class PremiseScorer(nn.Module):
         two-layer scorer.
     """
 
-    def __init__(self, hidden_dim: int, *, mode: str = "dot") -> None:
+    def __init__(
+        self,
+        hidden_dim: int,
+        *,
+        mode: str = "dot",
+        retrieval_score_weight: float = 0.0,
+        retrieval_score_normalization: str = "zscore",
+    ) -> None:
         super().__init__()
 
         if mode not in {"dot", "source_dot", "mlp"}:
             raise ValueError(f"Unsupported scoring mode '{mode}'. Use 'dot', 'source_dot', or 'mlp'.")
+        if retrieval_score_normalization not in {"raw", "zscore", "minmax"}:
+            raise ValueError(
+                "Unsupported retrieval_score_normalization "
+                f"'{retrieval_score_normalization}'. Use 'raw', 'zscore', or 'minmax'."
+            )
 
         self.mode = mode
         self.hidden_dim = hidden_dim
+        self.retrieval_score_weight = float(retrieval_score_weight)
+        self.retrieval_score_normalization = retrieval_score_normalization
 
         if mode == "source_dot":
             self.local_query_proj = nn.Linear(hidden_dim * 2, hidden_dim)
@@ -100,6 +120,7 @@ class PremiseScorer(nn.Module):
         candidate_vectors: Tensor,
         *,
         candidate_sources: list[str] | None = None,
+        candidate_retrieval_scores: list[float | None] | None = None,
         retrieval_goal_vec: Tensor | None = None,
     ) -> Tensor:
         """Score each candidate against the tactic-conditioned goal.
@@ -114,6 +135,9 @@ class PremiseScorer(nn.Module):
             Candidate embeddings, shape ``[C, H]``.
         candidate_sources : list[str] | None
             Candidate source labels, used by ``source_dot`` mode.
+        candidate_retrieval_scores : list[float | None] | None
+            Optional retriever scores aligned to candidates. ``None`` entries
+            are ignored, which is expected for local hypotheses.
         retrieval_goal_vec : Tensor | None
             Retriever-space goal embedding for lemma candidates in
             ``source_dot`` mode.
@@ -147,7 +171,10 @@ class PremiseScorer(nn.Module):
                 keys = self.lemma_key_proj(candidate_vectors.index_select(0, index))
                 scores.index_copy_(0, index, (keys @ query) * self._scale)
 
-            return scores
+            return self._add_retrieval_score_residual(
+                scores,
+                candidate_retrieval_scores=candidate_retrieval_scores,
+            )
 
         query = self.query_proj(torch.cat([goal, tactic], dim=0))
         candidate_vectors = self.key_proj(candidate_vectors)
@@ -162,7 +189,49 @@ class PremiseScorer(nn.Module):
             combined = torch.cat([query_expanded, candidate_vectors], dim=1)  # [C, 2H]
             scores = self.scorer(combined).squeeze(-1)  # [C]
 
-        return scores
+        return self._add_retrieval_score_residual(
+            scores,
+            candidate_retrieval_scores=candidate_retrieval_scores,
+        )
+
+    def _add_retrieval_score_residual(
+        self,
+        scores: Tensor,
+        *,
+        candidate_retrieval_scores: list[float | None] | None,
+    ) -> Tensor:
+        """Add a non-trainable retriever residual to lemma candidates."""
+        if self.retrieval_score_weight == 0.0 or not candidate_retrieval_scores:
+            return scores
+
+        scored_indices: list[int] = []
+        retrieval_values: list[float] = []
+        for idx, retrieval_score in enumerate(candidate_retrieval_scores):
+            if retrieval_score is not None:
+                scored_indices.append(idx)
+                retrieval_values.append(float(retrieval_score))
+
+        if not scored_indices:
+            return scores
+
+        values = torch.tensor(
+            retrieval_values,
+            dtype=scores.dtype,
+            device=scores.device,
+        )
+        if self.retrieval_score_normalization == "zscore":
+            values = values - values.mean()
+            if values.numel() > 1:
+                values = values / values.std(unbiased=False).clamp_min(1e-6)
+        elif self.retrieval_score_normalization == "minmax":
+            min_value = values.min()
+            span = (values.max() - min_value).clamp_min(1e-6)
+            values = (values - min_value) / span
+
+        residual = scores.new_zeros(scores.shape)
+        index = torch.tensor(scored_indices, dtype=torch.long, device=scores.device)
+        residual.index_copy_(0, index, values)
+        return scores + self.retrieval_score_weight * residual
 
     def forward(
         self,
@@ -205,6 +274,7 @@ class PremiseScorer(nn.Module):
                 tactic_embs[b],
                 pools[b].candidate_vectors,
                 candidate_sources=pools[b].candidate_sources,
+                candidate_retrieval_scores=pools[b].candidate_retrieval_scores,
                 retrieval_goal_vec=None if retrieval_goal_vecs is None else retrieval_goal_vecs[b],
             )
             all_scores.append(scores)

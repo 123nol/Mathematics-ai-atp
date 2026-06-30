@@ -47,12 +47,15 @@ class TestPremiseScorerConfig(unittest.TestCase):
         self.assertEqual(config.scoring_mode, "dot")
         self.assertEqual(config.tactic_conditioning, "soft")
         self.assertAlmostEqual(config.premise_loss_weight, 0.3)
+        self.assertAlmostEqual(config.retrieval_score_weight, 0.0)
+        self.assertEqual(config.retrieval_score_normalization, "zscore")
 
     def test_to_dict(self) -> None:
         config = PremiseScorerConfig(hidden_dim=64, scoring_mode="mlp")
         d = config.to_dict()
         self.assertEqual(d["hidden_dim"], 64)
         self.assertEqual(d["scoring_mode"], "mlp")
+        self.assertEqual(d["retrieval_score_weight"], 0.0)
 
 
 class TestPremiseScorerDot(unittest.TestCase):
@@ -96,6 +99,37 @@ class TestPremiseScorerDot(unittest.TestCase):
         tactic_embs = torch.randn(2, self.hidden_dim)
         with self.assertRaises(ValueError):
             self.scorer(goal_vecs, tactic_embs, pools)
+
+    def test_retrieval_score_residual_preserves_default_behavior(self) -> None:
+        goal = torch.randn(self.hidden_dim)
+        tactic = torch.randn(self.hidden_dim)
+        candidates = torch.randn(3, self.hidden_dim)
+        retrieval_scores = [0.1, 0.9, None]
+
+        without_scores = self.scorer.score(goal, tactic, candidates)
+        with_scores = self.scorer.score(
+            goal,
+            tactic,
+            candidates,
+            candidate_retrieval_scores=retrieval_scores,
+        )
+
+        self.assertTrue(torch.allclose(without_scores, with_scores))
+
+    def test_retrieval_score_residual_adjusts_lemma_scores(self) -> None:
+        scorer = PremiseScorer(
+            self.hidden_dim,
+            mode="dot",
+            retrieval_score_weight=1.0,
+            retrieval_score_normalization="raw",
+        )
+        base_scores = torch.tensor([0.0, 0.0, 0.0])
+        adjusted = scorer._add_retrieval_score_residual(
+            base_scores,
+            candidate_retrieval_scores=[0.2, 0.7, None],
+        )
+
+        self.assertTrue(torch.allclose(adjusted, torch.tensor([0.2, 0.7, 0.0])))
 
 
 class TestPremiseScorerMLP(unittest.TestCase):

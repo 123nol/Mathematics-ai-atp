@@ -32,19 +32,23 @@ from maths_ai.gnn_inference.atp_lean_gnn.training import (
 from maths_ai.gnn_inference.scripts.train_scorer import _load_pointer_checkpoint_model
 
 
-def _load_premise_config(path: Path, *, k_override: int | None = None) -> PremiseScorerConfig:
+def _load_premise_config(
+    path: Path,
+    *,
+    k_override: int | None = None,
+    retrieval_score_weight_override: float | None = None,
+    retrieval_score_normalization_override: str | None = None,
+) -> PremiseScorerConfig:
     with path.open("r", encoding="utf-8") as f:
         config = PremiseScorerConfig(**json.load(f))
-    if k_override is None:
-        return config
-    return PremiseScorerConfig(
-        hidden_dim=config.hidden_dim,
-        scoring_mode=config.scoring_mode,
-        tactic_conditioning=config.tactic_conditioning,
-        premise_loss_weight=config.premise_loss_weight,
-        k=k_override,
-        rerank_size=config.rerank_size,
-    )
+    config_dict = config.to_dict()
+    if k_override is not None:
+        config_dict["k"] = k_override
+    if retrieval_score_weight_override is not None:
+        config_dict["retrieval_score_weight"] = retrieval_score_weight_override
+    if retrieval_score_normalization_override is not None:
+        config_dict["retrieval_score_normalization"] = retrieval_score_normalization_override
+    return PremiseScorerConfig(**config_dict)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -56,6 +60,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--split", type=str, default="val", choices=("train", "val", "test"))
     parser.add_argument("--output-path", type=str, default=None, help="Optional JSON output path")
     parser.add_argument("--k", type=int, default=None, help="Override number of retrieved lemmas")
+    parser.add_argument(
+        "--retrieval-score-weight",
+        type=float,
+        default=None,
+        help="Optional retriever-score residual weight added to learned premise scores",
+    )
+    parser.add_argument(
+        "--retrieval-score-normalization",
+        type=str,
+        default=None,
+        choices=("raw", "zscore", "minmax"),
+        help="How to normalize retriever scores before adding the residual",
+    )
     parser.add_argument(
         "--retriever-config",
         type=str,
@@ -83,7 +100,12 @@ def main(argv: list[str] | None = None) -> int:
 
         config = load_pointer_config(Path(args.config))
         metadata = load_prepared_metadata(config.prepared_root)
-        premise_config = _load_premise_config(Path(args.premise_config), k_override=args.k)
+        premise_config = _load_premise_config(
+            Path(args.premise_config),
+            k_override=args.k,
+            retrieval_score_weight_override=args.retrieval_score_weight,
+            retrieval_score_normalization_override=args.retrieval_score_normalization,
+        )
         checkpoint = torch.load(Path(args.checkpoint), map_location=device, weights_only=False)
 
         retriever_config_path = args.retriever_config
@@ -97,6 +119,11 @@ def main(argv: list[str] | None = None) -> int:
 
         console_print(f"Loading lemma index from {args.index_path}...")
         lemma_index = LemmaIndex.load(Path(args.index_path))
+        console_print(
+            "Retriever score residual: "
+            f"weight={premise_config.retrieval_score_weight}, "
+            f"normalization={premise_config.retrieval_score_normalization}"
+        )
         _datasets, loaders = build_dataloaders(metadata, config)
 
         model = _load_pointer_checkpoint_model(
@@ -124,6 +151,8 @@ def main(argv: list[str] | None = None) -> int:
         scorer = PremiseScorer(
             hidden_dim=config.model.hidden_dim,
             mode=premise_config.scoring_mode,
+            retrieval_score_weight=premise_config.retrieval_score_weight,
+            retrieval_score_normalization=premise_config.retrieval_score_normalization,
         ).to(device)
         scorer.load_state_dict(checkpoint["scorer_state_dict"])
 

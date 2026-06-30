@@ -208,7 +208,13 @@ class InferencePipeline:
                 )
                 continue
 
-            scores = self.scorer.score(state_emb.squeeze(0), tactic_emb.squeeze(0), pool.candidate_vectors)
+            scores = self.scorer.score(
+                state_emb.squeeze(0),
+                tactic_emb.squeeze(0),
+                pool.candidate_vectors,
+                candidate_sources=pool.candidate_sources,
+                candidate_retrieval_scores=pool.candidate_retrieval_scores,
+            )
             sorted_indices = scores.argsort(descending=True)
             top_indices = sorted_indices[:arity].tolist()
 

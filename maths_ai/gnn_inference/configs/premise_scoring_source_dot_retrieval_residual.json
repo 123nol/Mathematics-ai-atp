@@ -1,0 +1,9 @@
+{
+  "k": 1000,
+  "rerank_size": 50,
+  "scoring_mode": "source_dot",
+  "tactic_conditioning": "soft",
+  "premise_loss_weight": 0.3,
+  "retrieval_score_weight": 0.5,
+  "retrieval_score_normalization": "zscore"
+}

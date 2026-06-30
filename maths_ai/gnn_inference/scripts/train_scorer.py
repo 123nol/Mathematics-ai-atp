@@ -114,6 +114,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--epochs", type=int, default=None, help="Optional override for number of training epochs")
     parser.add_argument("--k", type=int, default=None, help="Optional override for number of retrieved lemmas per proof state")
     parser.add_argument(
+        "--retrieval-score-weight",
+        type=float,
+        default=None,
+        help="Optional retriever-score residual weight added to learned premise scores",
+    )
+    parser.add_argument(
+        "--retrieval-score-normalization",
+        type=str,
+        default=None,
+        choices=("raw", "zscore", "minmax"),
+        help="How to normalize retriever scores before adding the residual",
+    )
+    parser.add_argument(
         "--freeze-pointer-heads",
         action="store_true",
         help="Train only the premise scorer and keep tactic/argument heads fixed",
@@ -143,15 +156,14 @@ def main(argv: list[str] | None = None) -> int:
         with open(args.premise_config, "r") as f:
             p_cfg_dict = json.load(f)
             p_config = PremiseScorerConfig(**p_cfg_dict)
+        p_config_dict = p_config.to_dict()
         if args.k is not None:
-            p_config = PremiseScorerConfig(
-                hidden_dim=p_config.hidden_dim,
-                scoring_mode=p_config.scoring_mode,
-                tactic_conditioning=p_config.tactic_conditioning,
-                premise_loss_weight=p_config.premise_loss_weight,
-                k=args.k,
-                rerank_size=p_config.rerank_size,
-            )
+            p_config_dict["k"] = args.k
+        if args.retrieval_score_weight is not None:
+            p_config_dict["retrieval_score_weight"] = args.retrieval_score_weight
+        if args.retrieval_score_normalization is not None:
+            p_config_dict["retrieval_score_normalization"] = args.retrieval_score_normalization
+        p_config = PremiseScorerConfig(**p_config_dict)
 
         run_dir = _create_run_dir(Path(args.run_root))
         console_print(f"Saving run to {run_dir}")
@@ -172,7 +184,10 @@ def main(argv: list[str] | None = None) -> int:
                     "epochs": None if args.epochs is None else int(args.epochs),
                     "freeze_pointer_heads": bool(args.freeze_pointer_heads),
                     "training_objective": "premise_loss_only" if args.freeze_pointer_heads else "tactic_argument_premise_multitask",
+                    "premise_scorer_config": p_config.to_dict(),
                     "k": p_config.k,
+                    "retrieval_score_weight": p_config.retrieval_score_weight,
+                    "retrieval_score_normalization": p_config.retrieval_score_normalization,
                     "memory_guard": memory_guard.config.to_dict(),
                 },
                 indent=2,
@@ -186,6 +201,11 @@ def main(argv: list[str] | None = None) -> int:
         console_print(f"Loading lemma index from {args.index_path}...")
         lemma_index = LemmaIndex.load(Path(args.index_path))
         console_print(f"Premise retrieval k: {p_config.k}")
+        console_print(
+            "Retriever score residual: "
+            f"weight={p_config.retrieval_score_weight}, "
+            f"normalization={p_config.retrieval_score_normalization}"
+        )
 
         # Build Dataloaders
         datasets, loaders = build_dataloaders(metadata, config)
@@ -215,7 +235,12 @@ def main(argv: list[str] | None = None) -> int:
             param.requires_grad = False
 
         # Build Premise Scorer
-        scorer = PremiseScorer(hidden_dim=config.model.hidden_dim, mode=p_config.scoring_mode)
+        scorer = PremiseScorer(
+            hidden_dim=config.model.hidden_dim,
+            mode=p_config.scoring_mode,
+            retrieval_score_weight=p_config.retrieval_score_weight,
+            retrieval_score_normalization=p_config.retrieval_score_normalization,
+        )
         scorer = scorer.to(device)
 
         if args.freeze_pointer_heads:
@@ -311,6 +336,7 @@ def main(argv: list[str] | None = None) -> int:
                     "retriever_config": None if args.retriever_config is None else str(args.retriever_config),
                     "retriever_checkpoint": None if args.retriever_checkpoint is None else str(args.retriever_checkpoint),
                     "training_objective": "premise_loss_only" if args.freeze_pointer_heads else "tactic_argument_premise_multitask",
+                    "premise_scorer_config": p_config.to_dict(),
                     "val_metrics": val_metrics,
                 }, run_dir / "best.pt")
 
