@@ -298,7 +298,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"Hit@5: {val_metrics['premise_top5_accuracy']:.4f} | "
                 f"Recall: {val_metrics['premise_recall']:.4f} | "
                 f"LocalRecall: {val_metrics['premise_local_recall']:.4f} | "
-                f"LemmaRecall: {val_metrics['premise_lemma_recall']:.4f}"
+                f"LemmaRecall: {val_metrics['premise_lemma_recall']:.4f} | "
+                f"LemmaRankDelta: {val_metrics['premise_lemma_avg_rank_delta']:.1f}"
             )
 
             if val_metrics["premise_mrr"] > best_val_mrr:
@@ -337,6 +338,34 @@ def main(argv: list[str] | None = None) -> int:
                     "val_premise_lemma_mrr": float(val_metrics["premise_lemma_mrr"]),
                     "val_premise_lemma_top1_accuracy": float(val_metrics["premise_lemma_top1_accuracy"]),
                     "val_premise_lemma_top5_accuracy": float(val_metrics["premise_lemma_top5_accuracy"]),
+                    "val_premise_rerank_comparable_count": int(val_metrics["premise_rerank_comparable_count"]),
+                    "val_premise_rerank_improvement_rate": float(val_metrics["premise_rerank_improvement_rate"]),
+                    "val_premise_rerank_worsening_rate": float(val_metrics["premise_rerank_worsening_rate"]),
+                    "val_premise_rerank_unchanged_rate": float(val_metrics["premise_rerank_unchanged_rate"]),
+                    "val_premise_avg_retrieval_rank": float(val_metrics["premise_avg_retrieval_rank"]),
+                    "val_premise_avg_scorer_rank": float(val_metrics["premise_avg_scorer_rank"]),
+                    "val_premise_avg_rank_delta": float(val_metrics["premise_avg_rank_delta"]),
+                    "val_premise_lemma_rerank_comparable_count": int(
+                        val_metrics["premise_lemma_rerank_comparable_count"]
+                    ),
+                    "val_premise_lemma_rerank_improvement_rate": float(
+                        val_metrics["premise_lemma_rerank_improvement_rate"]
+                    ),
+                    "val_premise_lemma_rerank_worsening_rate": float(
+                        val_metrics["premise_lemma_rerank_worsening_rate"]
+                    ),
+                    "val_premise_lemma_rerank_unchanged_rate": float(
+                        val_metrics["premise_lemma_rerank_unchanged_rate"]
+                    ),
+                    "val_premise_lemma_avg_retrieval_rank": float(
+                        val_metrics["premise_lemma_avg_retrieval_rank"]
+                    ),
+                    "val_premise_lemma_avg_scorer_rank": float(
+                        val_metrics["premise_lemma_avg_scorer_rank"]
+                    ),
+                    "val_premise_lemma_avg_rank_delta": float(
+                        val_metrics["premise_lemma_avg_rank_delta"]
+                    ),
                     "val_known_label_count": int(val_metrics["known_label_count"]),
                     "val_premise_target_present_count": int(val_metrics["premise_target_present_count"]),
                     "val_premise_valid_count": int(val_metrics["premise_valid_count"]),

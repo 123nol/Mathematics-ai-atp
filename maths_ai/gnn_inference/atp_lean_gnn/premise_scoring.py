@@ -311,9 +311,42 @@ def compute_premise_ranking_loss(
     top5_correct = 0
     mrr_sum = 0.0
     source_metrics = {
-        "local": {"target": 0, "valid": 0, "top1": 0, "top5": 0, "mrr_sum": 0.0},
-        "lemma": {"target": 0, "valid": 0, "top1": 0, "top5": 0, "mrr_sum": 0.0},
+        "local": {
+            "target": 0,
+            "valid": 0,
+            "top1": 0,
+            "top5": 0,
+            "mrr_sum": 0.0,
+            "rerank_comparable": 0,
+            "rerank_improved": 0,
+            "rerank_worsened": 0,
+            "rerank_unchanged": 0,
+            "retrieval_rank_sum": 0.0,
+            "scorer_rank_sum": 0.0,
+            "rank_delta_sum": 0.0,
+        },
+        "lemma": {
+            "target": 0,
+            "valid": 0,
+            "top1": 0,
+            "top5": 0,
+            "mrr_sum": 0.0,
+            "rerank_comparable": 0,
+            "rerank_improved": 0,
+            "rerank_worsened": 0,
+            "rerank_unchanged": 0,
+            "retrieval_rank_sum": 0.0,
+            "scorer_rank_sum": 0.0,
+            "rank_delta_sum": 0.0,
+        },
     }
+    rerank_comparable_count = 0
+    rerank_improved_count = 0
+    rerank_worsened_count = 0
+    rerank_unchanged_count = 0
+    rerank_retrieval_rank_sum = 0.0
+    rerank_scorer_rank_sum = 0.0
+    rerank_delta_sum = 0.0
 
     for b in range(batch_size):
         scores = score_list[b]  # [C_b]
@@ -363,6 +396,36 @@ def compute_premise_ranking_loss(
                 source_metrics[target_source]["top5"] += 1
             source_metrics[target_source]["mrr_sum"] += 1.0 / rank
 
+        retrieval_rank = None
+        if pool.candidate_retrieval_ranks:
+            retrieval_rank = pool.candidate_retrieval_ranks[target_idx]
+
+        if retrieval_rank is not None:
+            rank_delta = float(retrieval_rank - rank)
+            rerank_comparable_count += 1
+            rerank_retrieval_rank_sum += float(retrieval_rank)
+            rerank_scorer_rank_sum += float(rank)
+            rerank_delta_sum += rank_delta
+            if rank < retrieval_rank:
+                rerank_improved_count += 1
+            elif rank > retrieval_rank:
+                rerank_worsened_count += 1
+            else:
+                rerank_unchanged_count += 1
+
+            if target_source in source_metrics:
+                source = source_metrics[target_source]
+                source["rerank_comparable"] += 1
+                source["retrieval_rank_sum"] += float(retrieval_rank)
+                source["scorer_rank_sum"] += float(rank)
+                source["rank_delta_sum"] += rank_delta
+                if rank < retrieval_rank:
+                    source["rerank_improved"] += 1
+                elif rank > retrieval_rank:
+                    source["rerank_worsened"] += 1
+                else:
+                    source["rerank_unchanged"] += 1
+
     if losses:
         total_loss = torch.stack(losses).mean()
     else:
@@ -376,16 +439,37 @@ def compute_premise_ranking_loss(
         "top1_correct": top1_correct,
         "top5_correct": top5_correct,
         "mrr_sum": mrr_sum,
+        "rerank_comparable_count": rerank_comparable_count,
+        "rerank_improved_count": rerank_improved_count,
+        "rerank_worsened_count": rerank_worsened_count,
+        "rerank_unchanged_count": rerank_unchanged_count,
+        "rerank_retrieval_rank_sum": rerank_retrieval_rank_sum,
+        "rerank_scorer_rank_sum": rerank_scorer_rank_sum,
+        "rerank_delta_sum": rerank_delta_sum,
         "local_target_count": source_metrics["local"]["target"],
         "local_valid_samples": source_metrics["local"]["valid"],
         "local_top1_correct": source_metrics["local"]["top1"],
         "local_top5_correct": source_metrics["local"]["top5"],
         "local_mrr_sum": source_metrics["local"]["mrr_sum"],
+        "local_rerank_comparable_count": source_metrics["local"]["rerank_comparable"],
+        "local_rerank_improved_count": source_metrics["local"]["rerank_improved"],
+        "local_rerank_worsened_count": source_metrics["local"]["rerank_worsened"],
+        "local_rerank_unchanged_count": source_metrics["local"]["rerank_unchanged"],
+        "local_rerank_retrieval_rank_sum": source_metrics["local"]["retrieval_rank_sum"],
+        "local_rerank_scorer_rank_sum": source_metrics["local"]["scorer_rank_sum"],
+        "local_rerank_delta_sum": source_metrics["local"]["rank_delta_sum"],
         "lemma_target_count": source_metrics["lemma"]["target"],
         "lemma_valid_samples": source_metrics["lemma"]["valid"],
         "lemma_top1_correct": source_metrics["lemma"]["top1"],
         "lemma_top5_correct": source_metrics["lemma"]["top5"],
         "lemma_mrr_sum": source_metrics["lemma"]["mrr_sum"],
+        "lemma_rerank_comparable_count": source_metrics["lemma"]["rerank_comparable"],
+        "lemma_rerank_improved_count": source_metrics["lemma"]["rerank_improved"],
+        "lemma_rerank_worsened_count": source_metrics["lemma"]["rerank_worsened"],
+        "lemma_rerank_unchanged_count": source_metrics["lemma"]["rerank_unchanged"],
+        "lemma_rerank_retrieval_rank_sum": source_metrics["lemma"]["retrieval_rank_sum"],
+        "lemma_rerank_scorer_rank_sum": source_metrics["lemma"]["scorer_rank_sum"],
+        "lemma_rerank_delta_sum": source_metrics["lemma"]["rank_delta_sum"],
     }
 
     return total_loss, metrics

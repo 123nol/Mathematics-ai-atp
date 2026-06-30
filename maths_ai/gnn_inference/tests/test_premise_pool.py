@@ -24,7 +24,10 @@ class _FakeLemmaIndex:
                 np.full((2, dim), fill_value=float(b + 1), dtype=np.float32)
             )
         lemma_vecs = np.stack(lemma_vecs, axis=0)
-        scores = np.zeros((batch_size, 2), dtype=np.float32)
+        scores = np.array(
+            [[0.9 - 0.1 * i for i in range(2)] for _ in range(batch_size)],
+            dtype=np.float32,
+        )
         return lemma_ids, lemma_vecs, scores
 
 
@@ -61,6 +64,11 @@ class PremisePoolTests(unittest.TestCase):
         self.assertEqual(pool0.lemma_ids, [100, 101])
         self.assertEqual(pool0.candidate_sources.count("local"), 2)
         self.assertEqual(pool0.candidate_sources.count("lemma"), 2)
+        self.assertEqual(pool0.candidate_retrieval_ranks, [None, None, 1, 2])
+        self.assertIsNone(pool0.candidate_retrieval_scores[0])
+        self.assertIsNone(pool0.candidate_retrieval_scores[1])
+        self.assertAlmostEqual(pool0.candidate_retrieval_scores[2], 0.9)
+        self.assertAlmostEqual(pool0.candidate_retrieval_scores[3], 0.8)
         self.assertEqual(pool0.candidate_vectors.shape[0], 4)
 
         pool1 = pools[1]
@@ -68,6 +76,11 @@ class PremisePoolTests(unittest.TestCase):
         self.assertEqual(pool1.lemma_ids, [102, 103])
         self.assertEqual(pool1.candidate_sources.count("local"), 2)
         self.assertEqual(pool1.candidate_sources.count("lemma"), 2)
+        self.assertEqual(pool1.candidate_retrieval_ranks, [None, None, 1, 2])
+        self.assertIsNone(pool1.candidate_retrieval_scores[0])
+        self.assertIsNone(pool1.candidate_retrieval_scores[1])
+        self.assertAlmostEqual(pool1.candidate_retrieval_scores[2], 0.9)
+        self.assertAlmostEqual(pool1.candidate_retrieval_scores[3], 0.8)
         self.assertEqual(pool1.candidate_vectors.shape[0], 4)
 
     def test_uses_retrieval_state_vectors_for_lemma_search(self) -> None:

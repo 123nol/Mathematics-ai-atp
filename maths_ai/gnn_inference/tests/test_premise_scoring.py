@@ -323,6 +323,62 @@ class TestPremiseRankingLoss(unittest.TestCase):
         self.assertEqual(metrics["local_top1_correct"], 1)
         self.assertEqual(metrics["lemma_top1_correct"], 1)
 
+    def test_lemma_rerank_metrics_compare_retrieval_and_scorer_ranks(self) -> None:
+        hidden_dim = 4
+        pools = [
+            CandidatePool(
+                candidate_vectors=torch.randn(3, hidden_dim),
+                candidate_sources=["lemma", "lemma", "lemma"],
+                candidate_ids=[100, 101, 102],
+                local_node_ids=[],
+                lemma_ids=[100, 101, 102],
+                candidate_retrieval_ranks=[1, 2, 3],
+                candidate_retrieval_scores=[0.9, 0.8, 0.7],
+            ),
+            CandidatePool(
+                candidate_vectors=torch.randn(3, hidden_dim),
+                candidate_sources=["lemma", "lemma", "lemma"],
+                candidate_ids=[200, 201, 202],
+                local_node_ids=[],
+                lemma_ids=[200, 201, 202],
+                candidate_retrieval_ranks=[1, 2, 3],
+                candidate_retrieval_scores=[0.9, 0.8, 0.7],
+            ),
+            CandidatePool(
+                candidate_vectors=torch.randn(3, hidden_dim),
+                candidate_sources=["lemma", "lemma", "lemma"],
+                candidate_ids=[300, 301, 302],
+                local_node_ids=[],
+                lemma_ids=[300, 301, 302],
+                candidate_retrieval_ranks=[1, 2, 3],
+                candidate_retrieval_scores=[0.9, 0.8, 0.7],
+            ),
+        ]
+        scores = [
+            torch.tensor([0.1, 0.2, 0.9]),  # target 102: rank improves 3 -> 1
+            torch.tensor([0.1, 0.2, 0.9]),  # target 200: rank worsens 1 -> 3
+            torch.tensor([0.1, 0.9, 0.2]),  # target 301: unchanged at rank 2
+        ]
+
+        arg_node_indices = torch.tensor([[-1], [-1], [-1]])
+        arg_lemma_ids = torch.tensor([[102], [200], [301]])
+
+        _loss, metrics = compute_premise_ranking_loss(
+            scores, pools, arg_node_indices, arg_lemma_ids
+        )
+
+        self.assertEqual(metrics["rerank_comparable_count"], 3)
+        self.assertEqual(metrics["rerank_improved_count"], 1)
+        self.assertEqual(metrics["rerank_worsened_count"], 1)
+        self.assertEqual(metrics["rerank_unchanged_count"], 1)
+        self.assertAlmostEqual(metrics["rerank_retrieval_rank_sum"], 6.0)
+        self.assertAlmostEqual(metrics["rerank_scorer_rank_sum"], 6.0)
+        self.assertAlmostEqual(metrics["rerank_delta_sum"], 0.0)
+        self.assertEqual(metrics["lemma_rerank_comparable_count"], 3)
+        self.assertEqual(metrics["lemma_rerank_improved_count"], 1)
+        self.assertEqual(metrics["lemma_rerank_worsened_count"], 1)
+        self.assertEqual(metrics["lemma_rerank_unchanged_count"], 1)
+
     def test_batch_loss(self) -> None:
         hidden_dim = 8
         pools = [_make_pool(num_local=2, num_lemma=3, hidden_dim=hidden_dim) for _ in range(3)]

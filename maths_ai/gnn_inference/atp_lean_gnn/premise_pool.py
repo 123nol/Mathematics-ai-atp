@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 import numpy as np
@@ -25,6 +25,8 @@ class CandidatePool:
     candidate_ids: list[int]
     local_node_ids: list[int]
     lemma_ids: list[int]
+    candidate_retrieval_ranks: list[int | None] = field(default_factory=list)
+    candidate_retrieval_scores: list[float | None] = field(default_factory=list)
 
 
 def build_unified_pools(
@@ -51,7 +53,7 @@ def build_unified_pools(
     if int(search_vecs.size(0)) != batch_size:
         raise ValueError("retrieval_state_vecs must have the same batch size as state_vecs.")
 
-    lemma_ids_batch, lemma_vecs_batch, _scores = lemma_index.search(search_vecs, k=k)
+    lemma_ids_batch, lemma_vecs_batch, retrieval_scores_batch = lemma_index.search(search_vecs, k=k)
     if len(lemma_ids_batch) != batch_size:
         raise ValueError("lemma_index returned a batch size mismatch.")
 
@@ -70,19 +72,29 @@ def build_unified_pools(
 
         lemma_ids = [int(x) for x in lemma_ids_batch[b]]
         lemma_vecs = lemma_vecs_batch[b]
+        lemma_ranks: list[int | None] = list(range(1, len(lemma_ids) + 1))
+        lemma_scores: list[float | None] = [
+            float(score) for score in retrieval_scores_batch[b][: len(lemma_ids)]
+        ]
 
         if local_vecs.numel() == 0:
             candidate_vectors = lemma_vecs
             candidate_sources = ["lemma"] * len(lemma_ids)
             candidate_ids = lemma_ids
+            candidate_retrieval_ranks = lemma_ranks
+            candidate_retrieval_scores = lemma_scores
         elif lemma_vecs.numel() == 0:
             candidate_vectors = local_vecs
             candidate_sources = ["local"] * len(local_id_list)
             candidate_ids = local_id_list
+            candidate_retrieval_ranks = [None] * len(local_id_list)
+            candidate_retrieval_scores = [None] * len(local_id_list)
         else:
             candidate_vectors = torch.cat([local_vecs, lemma_vecs], dim=0)
             candidate_sources = ["local"] * len(local_id_list) + ["lemma"] * len(lemma_ids)
             candidate_ids = local_id_list + lemma_ids
+            candidate_retrieval_ranks = [None] * len(local_id_list) + lemma_ranks
+            candidate_retrieval_scores = [None] * len(local_id_list) + lemma_scores
 
         pools.append(
             CandidatePool(
@@ -91,6 +103,8 @@ def build_unified_pools(
                 candidate_ids=candidate_ids,
                 local_node_ids=local_id_list,
                 lemma_ids=lemma_ids,
+                candidate_retrieval_ranks=candidate_retrieval_ranks,
+                candidate_retrieval_scores=candidate_retrieval_scores,
             )
         )
 

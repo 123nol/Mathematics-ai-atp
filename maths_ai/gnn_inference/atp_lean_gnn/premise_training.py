@@ -334,6 +334,27 @@ def evaluate_model_with_premises(
     lemma_top1_correct = 0
     lemma_top5_correct = 0
     lemma_mrr_sum = 0.0
+    rerank_comparable = 0
+    rerank_improved = 0
+    rerank_worsened = 0
+    rerank_unchanged = 0
+    rerank_retrieval_rank_sum = 0.0
+    rerank_scorer_rank_sum = 0.0
+    rerank_delta_sum = 0.0
+    local_rerank_comparable = 0
+    local_rerank_improved = 0
+    local_rerank_worsened = 0
+    local_rerank_unchanged = 0
+    local_rerank_retrieval_rank_sum = 0.0
+    local_rerank_scorer_rank_sum = 0.0
+    local_rerank_delta_sum = 0.0
+    lemma_rerank_comparable = 0
+    lemma_rerank_improved = 0
+    lemma_rerank_worsened = 0
+    lemma_rerank_unchanged = 0
+    lemma_rerank_retrieval_rank_sum = 0.0
+    lemma_rerank_scorer_rank_sum = 0.0
+    lemma_rerank_delta_sum = 0.0
 
     total_count = 0
     total_batches = len(loader)
@@ -434,6 +455,27 @@ def evaluate_model_with_premises(
         lemma_top1_correct += p_metrics["lemma_top1_correct"]
         lemma_top5_correct += p_metrics["lemma_top5_correct"]
         lemma_mrr_sum += p_metrics["lemma_mrr_sum"]
+        rerank_comparable += p_metrics["rerank_comparable_count"]
+        rerank_improved += p_metrics["rerank_improved_count"]
+        rerank_worsened += p_metrics["rerank_worsened_count"]
+        rerank_unchanged += p_metrics["rerank_unchanged_count"]
+        rerank_retrieval_rank_sum += p_metrics["rerank_retrieval_rank_sum"]
+        rerank_scorer_rank_sum += p_metrics["rerank_scorer_rank_sum"]
+        rerank_delta_sum += p_metrics["rerank_delta_sum"]
+        local_rerank_comparable += p_metrics["local_rerank_comparable_count"]
+        local_rerank_improved += p_metrics["local_rerank_improved_count"]
+        local_rerank_worsened += p_metrics["local_rerank_worsened_count"]
+        local_rerank_unchanged += p_metrics["local_rerank_unchanged_count"]
+        local_rerank_retrieval_rank_sum += p_metrics["local_rerank_retrieval_rank_sum"]
+        local_rerank_scorer_rank_sum += p_metrics["local_rerank_scorer_rank_sum"]
+        local_rerank_delta_sum += p_metrics["local_rerank_delta_sum"]
+        lemma_rerank_comparable += p_metrics["lemma_rerank_comparable_count"]
+        lemma_rerank_improved += p_metrics["lemma_rerank_improved_count"]
+        lemma_rerank_worsened += p_metrics["lemma_rerank_worsened_count"]
+        lemma_rerank_unchanged += p_metrics["lemma_rerank_unchanged_count"]
+        lemma_rerank_retrieval_rank_sum += p_metrics["lemma_rerank_retrieval_rank_sum"]
+        lemma_rerank_scorer_rank_sum += p_metrics["lemma_rerank_scorer_rank_sum"]
+        lemma_rerank_delta_sum += p_metrics["lemma_rerank_delta_sum"]
 
         # Tactic top-1 accuracy (excluding UNK)
         known_mask = targets != unknown_tactic_id
@@ -481,6 +523,27 @@ def evaluate_model_with_premises(
         "premise_lemma_mrr": lemma_mrr_sum / max(lemma_valid, 1),
         "premise_lemma_top1_accuracy": lemma_top1_correct / max(lemma_valid, 1),
         "premise_lemma_top5_accuracy": lemma_top5_correct / max(lemma_valid, 1),
+        "premise_rerank_comparable_count": rerank_comparable,
+        "premise_rerank_improvement_rate": rerank_improved / max(rerank_comparable, 1),
+        "premise_rerank_worsening_rate": rerank_worsened / max(rerank_comparable, 1),
+        "premise_rerank_unchanged_rate": rerank_unchanged / max(rerank_comparable, 1),
+        "premise_avg_retrieval_rank": rerank_retrieval_rank_sum / max(rerank_comparable, 1),
+        "premise_avg_scorer_rank": rerank_scorer_rank_sum / max(rerank_comparable, 1),
+        "premise_avg_rank_delta": rerank_delta_sum / max(rerank_comparable, 1),
+        "premise_local_rerank_comparable_count": local_rerank_comparable,
+        "premise_local_rerank_improvement_rate": local_rerank_improved / max(local_rerank_comparable, 1),
+        "premise_local_rerank_worsening_rate": local_rerank_worsened / max(local_rerank_comparable, 1),
+        "premise_local_rerank_unchanged_rate": local_rerank_unchanged / max(local_rerank_comparable, 1),
+        "premise_local_avg_retrieval_rank": local_rerank_retrieval_rank_sum / max(local_rerank_comparable, 1),
+        "premise_local_avg_scorer_rank": local_rerank_scorer_rank_sum / max(local_rerank_comparable, 1),
+        "premise_local_avg_rank_delta": local_rerank_delta_sum / max(local_rerank_comparable, 1),
+        "premise_lemma_rerank_comparable_count": lemma_rerank_comparable,
+        "premise_lemma_rerank_improvement_rate": lemma_rerank_improved / max(lemma_rerank_comparable, 1),
+        "premise_lemma_rerank_worsening_rate": lemma_rerank_worsened / max(lemma_rerank_comparable, 1),
+        "premise_lemma_rerank_unchanged_rate": lemma_rerank_unchanged / max(lemma_rerank_comparable, 1),
+        "premise_lemma_avg_retrieval_rank": lemma_rerank_retrieval_rank_sum / max(lemma_rerank_comparable, 1),
+        "premise_lemma_avg_scorer_rank": lemma_rerank_scorer_rank_sum / max(lemma_rerank_comparable, 1),
+        "premise_lemma_avg_rank_delta": lemma_rerank_delta_sum / max(lemma_rerank_comparable, 1),
         "known_label_count": known_count,
         "premise_target_present_count": premise_target_present,
         "premise_valid_count": premise_valid,
