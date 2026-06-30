@@ -357,7 +357,7 @@ class TestPremiseRankingLoss(unittest.TestCase):
         scores = [
             torch.tensor([0.1, 0.2, 0.9]),  # target 102: rank improves 3 -> 1
             torch.tensor([0.1, 0.2, 0.9]),  # target 200: rank worsens 1 -> 3
-            torch.tensor([0.1, 0.9, 0.2]),  # target 301: unchanged at rank 2
+            torch.tensor([0.3, 0.2, 0.1]),  # target 301: unchanged at rank 2
         ]
 
         arg_node_indices = torch.tensor([[-1], [-1], [-1]])
