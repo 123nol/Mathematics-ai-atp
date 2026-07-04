@@ -10971,3 +10971,33 @@
       (STV 1.0 1.0)
    )
 )
+
+
+!(compileadd hkb 
+   (: (no_inverse rule-abduction) 
+      (Implication 
+         (Premises 
+            (Provable (→ $A $X)) 
+            (Provable (→ $B $X))
+         ) 
+         (Conclusions 
+            (Provable (→ $A $B))
+         )
+      ) 
+      (STV 0.1 0.3) ; Heuristic penalty applied
+   )
+)
+!(compileadd hkb 
+   (: (no_inverse rule-induction) 
+      (Implication 
+         (Premises 
+            (Provable (→ $X $A)) 
+            (Provable (→ $X $B))
+         ) 
+         (Conclusions 
+            (Provable (→ $A $B))
+         )
+      ) 
+      (STV 1.0 0.3) ; Heuristic penalty applied
+   )
+)
