@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# Large artifacts
+*.index
+*.npy
+*.npz
+*.pt
+lemmas.jsonl
+lemma_ids.json
+manifest.json
+
+# Evaluation results
+evaluation/results/*
+!evaluation/results/comparison.md
+!evaluation/results/comparison.json
+!evaluation/results/semantic_only.json
+!evaluation/results/hybrid_only.json

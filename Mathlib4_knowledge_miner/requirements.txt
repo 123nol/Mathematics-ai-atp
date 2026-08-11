@@ -1,0 +1,6 @@
+numpy
+hnswlib==0.8.0
+faiss-cpu
+torch
+torch_geometric
+datasets
